@@ -185,7 +185,7 @@ def password_login(base_url: str, username: str, password: str,
     # ---------- Step 6: 回调 authCenter，完成 SSO 跳转回 eLearning ----------
     try:
         resp = session.post(
-            "https://id.fudan.edu.cn/ac/authCenter/authnEngine",
+            "https://id.fudan.edu.cn/idp/authCenter/authnEngine",
             data={"loginToken": login_token},
             allow_redirects=True,
             timeout=timeout,
