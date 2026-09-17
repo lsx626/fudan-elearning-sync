@@ -19,7 +19,7 @@ object ApiClient {
                 .header("User-Agent", "Mozilla/5.0 (Linux; Android) FudanELearningSync/1.0")
                 .header("Accept", "application/json")
             if (canvasSession.isNotEmpty()) {
-                builder.header("Cookie", "_canvas_session=$canvasSession")
+                builder.header("Cookie", "_normandy_session=$canvasSession")
             }
             if (csrfToken.isNotEmpty() &&
                 (original.method == "POST" || original.method == "PUT" || original.method == "DELETE")
