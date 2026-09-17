@@ -182,16 +182,29 @@ def password_login(base_url: str, username: str, password: str,
         raise PasswordLoginError(
             message or "账号或密码错误，请重新输入")
 
-    # ---------- Step 6: 回调 authCenter，完成 SSO 跳转回 eLearning ----------
+    # ---------- Step 6: 回调 authCenter，拿到 CAS ticket 跳转地址 ----------
     try:
         resp = session.post(
             "https://id.fudan.edu.cn/idp/authCenter/authnEngine",
             data={"loginToken": login_token},
-            allow_redirects=True,
+            allow_redirects=False,
             timeout=timeout,
         )
     except requests.RequestException as exc:
         raise PasswordLoginError(f"完成 SSO 跳转失败：{exc}") from exc
+
+    # authnEngine 返回的是含 JS 跳转的中间页，需解析出 CAS ticket 地址
+    body = resp.text or ""
+    ticket_match = re.search(r'locationValue\s*=\s*["\']([^"\']+)["\']', body)
+    if not ticket_match:
+        ticket_match = re.search(
+            r'["\'](https?://[^"\']*/login/cas\?ticket=[^"\']+)["\']', body)
+    if ticket_match:
+        ticket_url = ticket_match.group(1)
+        try:
+            session.get(ticket_url, allow_redirects=True, timeout=timeout)
+        except requests.RequestException as exc:
+            raise PasswordLoginError(f"CAS 认证失败：{exc}") from exc
 
     # ---------- Step 7: 访问 eLearning 首页，确认登录成功并提取 CSRF ----------
     try:
@@ -200,8 +213,9 @@ def password_login(base_url: str, username: str, password: str,
         raise PasswordLoginError(f"访问首页失败：{exc}") from exc
 
     body = home.text or ""
-    # 确认已登录（不在登录页）
-    if 'id="login_form"' in body or "/login" in (home.url or ""):
+    # 确认已登录（存在 Canvas 会话 Cookie）
+    session_names = {c.name for c in session.cookies}
+    if not (session_names & {"_normandy_session", "_canvas_session"}):
         raise PasswordLoginError("登录未成功，请检查账号密码是否正确")
 
     csrf_match = CSRF_META_RE.search(body)
@@ -233,7 +247,7 @@ def login_and_save(base_url: str, username: str, password: str,
     """
     session, csrf_token = password_login(base_url, username, password)
     cookies = session_cookies(session)
-    if not any(c["name"] == "_canvas_session" for c in cookies):
+    if not any(c["name"] in ("_normandy_session", "_canvas_session") for c in cookies):
         raise PasswordLoginError("登录后未获得会话 Cookie，登录可能未真正成功")
     save_cookies(cookie_file, cookies, csrf_token)
     if store_credentials:
