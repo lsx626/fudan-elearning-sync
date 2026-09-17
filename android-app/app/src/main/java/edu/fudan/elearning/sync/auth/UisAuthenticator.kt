@@ -48,6 +48,18 @@ class UisAuthenticator(
         .followSslRedirects(true)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            chain.proceed(
+                chain.request().newBuilder()
+                    .header(
+                        "User-Agent",
+                        "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 " +
+                            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                    )
+                    .header("Accept", "application/json, text/plain, */*")
+                    .build()
+            )
+        }
         .build()
 
     suspend fun login(username: String, password: String): LoginResult =
@@ -66,13 +78,13 @@ class UisAuthenticator(
     private fun doLogin(username: String, password: String): LoginResult {
         val idpBase = "https://id.fudan.edu.cn/idp"
 
-        // Step 1: 获取登录上下文
+        // Step 1: 获取登录上下文（用 queryParameter 避免 URL 编码问题）
         val loginResp = client.newCall(
             Request.Builder().url("$baseUrl/login").get().build()
         ).execute()
-        val finalUrl = loginResp.request.url.toString()
-        val lck = finalUrl.substringAfter("lck=", "").substringBefore("&")
-        val entityId = finalUrl.substringAfter("entityId=", "").substringBefore("&")
+        val finalUrl = loginResp.request.url
+        val lck = finalUrl.queryParameter("lck") ?: ""
+        val entityId = finalUrl.queryParameter("entityId") ?: ""
         if (lck.isEmpty() || entityId.isEmpty()) {
             return LoginResult.Failure("无法获取登录上下文，请检查网络")
         }
@@ -147,12 +159,18 @@ class UisAuthenticator(
                 if (message.isNotEmpty()) message else "账号或密码错误，请重新输入"
             )
         }
-        val loginToken = execJson.optString("loginToken")
+        var loginToken = execJson.optString("loginToken")
+        if (loginToken.isEmpty()) {
+            loginToken = execJson.optJSONObject("data")?.optString("loginToken") ?: ""
+        }
+        if (loginToken.isEmpty()) {
+            return LoginResult.Failure("登录成功但未获取到登录令牌")
+        }
 
-        // Step 6: 回调完成 SSO
+        // Step 6: 回调完成 SSO（表单 POST，正确前缀为 /idp/）
         client.newCall(
             Request.Builder()
-                .url("https://id.fudan.edu.cn/ac/authCenter/authnEngine")
+                .url("https://id.fudan.edu.cn/idp/authCenter/authnEngine")
                 .post(FormBody.Builder().add("loginToken", loginToken).build())
                 .build()
         ).execute().close()
