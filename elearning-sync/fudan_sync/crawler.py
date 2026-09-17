@@ -66,6 +66,10 @@ class CrawlResult:
     files: Dict[int, RemoteFile] = field(default_factory=dict)
     pages: List[CoursePage] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    # 课程"文件"工具列表是否成功拉取。
+    # 只有成功拉取时，"本轮未见的文件 = 远端已删除"这一推断才成立；
+    # 拉取失败（网络抖动 / 限流 / 403）时不能据此删除本地文件。
+    files_listed_ok: bool = False
 
     def add_file(self, remote: RemoteFile, context: str = "") -> None:
         existing = self.files.get(remote.file_id)
@@ -150,8 +154,11 @@ class Crawler:
                                             params={"per_page": 100}):
                 self._add_file_entry(item, course_id, folder_paths, result, "files")
         except Exception as exc:  # pylint: disable=broad-except
-            self._log("warning", "课程 %d 文件列表获取失败: %s", course_id, exc)
+            self._log("warning", "课程 %d 文件列表获取失败: %s（本次不判定远端删除）",
+                      course_id, exc)
             result.errors.append(f"course_files: {exc}")
+            return
+        result.files_listed_ok = True
 
     def _add_file_entry(self, item: Dict, course_id: int,
                         folder_paths: Dict[int, str], result: CrawlResult,

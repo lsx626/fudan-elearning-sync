@@ -341,6 +341,21 @@ def clear_credentials(username: Optional[str] = None) -> None:
         pass
 
 
+def has_stored_password(username: str) -> bool:
+    """探测钥匙串里是否存有指定账号的密码（不返回密码本身，失败返回 False）。
+
+    供认证方式自动回退使用：配置里 auth.method 缺失（会被 load_config 回退成
+    token）但没有配 token，若钥匙串里有密码，就应当按密码登录处理，
+    而不是误报“API Token 为空”。
+    """
+    if not username:
+        return False
+    try:
+        return load_password(username) is not None
+    except Exception:  # pylint: disable=broad-except
+        return False
+
+
 def login_with_stored_credentials(base_url: str, username: str,
                                   cookie_file: str) -> Tuple[str, Optional[str]]:
     """用已存的账号密码静默登录（启动时自动调用）。"""

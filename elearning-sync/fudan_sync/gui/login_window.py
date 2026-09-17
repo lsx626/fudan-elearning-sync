@@ -20,7 +20,7 @@ class LoginWindow(QDialog):
         super().__init__(parent)
         self.cfg = cfg
         self.worker: LoginWorker | None = None
-        self.setWindowTitle("登录 · 复旦 eLearning 同步")
+        self.setWindowTitle("登录 · 复小学")
         self.setWindowIcon(app_icon())
         self.setFixedSize(480, 620)
         self.setObjectName("root")
@@ -46,7 +46,7 @@ class LoginWindow(QDialog):
         root.addSpacing(6)
         root.addWidget(icon_label)
 
-        title = QLabel("复旦 eLearning 课程同步")
+        title = QLabel("复小学")
         title.setObjectName("titleLabel")
         title.setAlignment(Qt.AlignCenter)
         root.addSpacing(14)

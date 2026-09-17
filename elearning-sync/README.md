@@ -1,7 +1,10 @@
-# 复旦大学 eLearning 课程文件同步工具
+# 复小学 · 复旦大学 eLearning 课程文件同步工具
 
 把 **elearning.fudan.edu.cn**（基于 Canvas LMS）上每门课程的全部文件自动下载到本地，
 并通过守护进程定时增量比对，保持网站与本地的同步。
+
+提供图形界面（python gui.py，Windows / macOS / Linux 桌面）与命令行（sync.py）两种使用方式；
+另有安卓端「复小学」可随时随地查看已同步的课程资料。
 
 ## 功能特性
 
@@ -12,7 +15,8 @@
 - **实时更新**：`daemon` 守护进程按间隔轮询（Canvas 不向学生推送变更，轮询是唯一可行方案）
 - **页面归档**：页面/作业/公告正文导出为 HTML 存到 `<课程>/_pages/`，保留非文件类内容
 - **稳健下载**：断点续传（HTTP Range）、并发下载、大小校验、自动重试、429 限流退避
-- **三种登录方式**：API Token / 浏览器交互登录（UIS）/ 手动导入 Cookie
+- **图形界面**：python gui.py 打开桌面端，首次只需输入 UIS 账号密码，之后开机自动同步
+- **四种登录方式**：UIS 账号密码（GUI 默认，密码存系统钥匙串）/ API Token / 浏览器交互登录 / 手动导入 Cookie
 
 ## 快速开始
 
@@ -163,7 +167,11 @@ elearning_files/
 
 ```
 elearning-sync/
+├── gui.py                   # 图形界面入口（桌面端“复小学”）
 ├── sync.py                  # CLI 入口（login/courses/sync/daemon/status/files）
+├── 复小学.spec              # PyInstaller 打包配置（生成 dist/复小学/）
+├── build_assets/            # 应用图标（app.ico + 各尺寸 PNG）
+├── installer/setup.iss      # Inno Setup 安装包脚本
 ├── config.example.yaml      # 配置示例
 ├── requirements.txt
 └── fudan_sync/
@@ -175,5 +183,10 @@ elearning-sync/
     ├── state.py             # SQLite 状态库（WAL）
     ├── sync_engine.py       # 同步引擎：编排爬取→比对→下载→归档
     ├── daemon.py            # 守护进程
-    └── utils.py             # 工具函数
+    ├── utils.py             # 工具函数
+    └── gui/                 # 桌面图形界面（PySide6）
+        ├── main_window.py   # 主界面：总览 / 课程 / 文件 / 日志
+        ├── login_window.py  # 首次登录引导
+        ├── workers.py       # 后台线程（登录 / 同步）
+        └── tray.py          # 系统托盘
 ```

@@ -1,10 +1,10 @@
-; 复旦 eLearning 课程同步 - Inno Setup 安装脚本
-; 版本: 1.0.2
+; 复小学 - 复旦大学 eLearning 课程同步 - Inno Setup 安装脚本
+; 版本: 1.0.3
 
-#define MyAppName "复旦 eLearning 课程同步"
-#define MyAppVersion "1.0.2"
-#define MyAppPublisher "Fudan ELearning Sync"
-#define MyAppExeName "复旦eLearning同步.exe"
+#define MyAppName "复小学"
+#define MyAppVersion "1.0.3"
+#define MyAppPublisher "FuXiaoXue"
+#define MyAppExeName "复小学.exe"
 #define MyAppId "{{8E6B7D1C-3F6E-4A8C-9B5E-2A3F7C9D1E22}"
 
 [Setup]
@@ -12,13 +12,13 @@ AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\FudanELearningSync
+DefaultDirName={autopf}\复小学
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 LicenseFile=..\LICENSE
 InfoBeforeFile=..\README.md
 OutputDir=release
-OutputBaseFilename=复旦eLearning同步-Setup-v1.0.2
+OutputBaseFilename=复小学-Setup-v1.0.3
 SetupIconFile=..\build_assets\app.ico
 Compression=lzma2/ultra
 SolidCompression=yes
@@ -38,7 +38,7 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Name: "autostart"; Description: "开机自动启动"; GroupDescription: "自动启动:"; Flags: unchecked
 
 [Files]
-Source: "..\dist\复旦eLearning同步\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\复小学\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -46,10 +46,13 @@ Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "FudanELearningSync"; ValueData: """{app}\{#MyAppExeName}"" --minimized"; Flags: uninsdeletevalue; Tasks: autostart
+; 开机自启的注册表值名与程序内 autostart.py 保持一致（都是“复小学”）
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "复小学"; ValueData: """{app}\{#MyAppExeName}"" --minimized"; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "立即运行 {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
+; 老版本（<=1.0.2）数据目录名仍是 fudan-elearning-sync，卸载时一并清理
 Type: filesandordirs; Name: "%APPDATA%\fudan-elearning-sync"
+Type: filesandordirs; Name: "%APPDATA%\复小学"

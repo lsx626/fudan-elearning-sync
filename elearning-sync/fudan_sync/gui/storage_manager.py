@@ -11,7 +11,7 @@ import os
 from typing import Dict, List, Optional, Set
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog,
                                QFrame, QHBoxLayout, QHeaderView, QLabel,
                                QListWidget, QListWidgetItem, QMessageBox,
@@ -42,7 +42,7 @@ class StorageManagerDialog(QDialog):
         super().__init__(parent)
         self.store = state_store
 
-        self.setWindowTitle("存储管理 · 复旦 eLearning 同步")
+        self.setWindowTitle("存储管理 · 复小学")
         self.setWindowIcon(app_icon())
         self.setObjectName("root")
         self.setMinimumSize(960, 620)
@@ -461,7 +461,7 @@ class StorageManagerDialog(QDialog):
             status_text, status_color = self._format_status(status)
             status_item = QTableWidgetItem(status_text)
             status_item.setTextAlignment(Qt.AlignCenter)
-            status_item.setForeground(Qt.GlobalColor.white if False else Qt.black)
+            status_item.setForeground(QColor(status_color))
             self.file_table.setItem(row, 3, status_item)
 
         self.file_table.blockSignals(False)

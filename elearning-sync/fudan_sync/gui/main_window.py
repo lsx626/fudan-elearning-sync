@@ -8,12 +8,12 @@ import webbrowser
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication
+from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QTextCursor
 from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QHeaderView, QLabel,
                                QMainWindow, QMenu, QMessageBox, QProgressBar,
                                QPushButton, QSplitter, QStatusBar, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+                               QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
 from .. import __version__
 from ..auth import AuthError
@@ -89,7 +89,7 @@ class MainWindow(QMainWindow):
         self._current_file_course_id: Optional[int] = None  # 当前展开文件列表的课程 ID
 
         self.setObjectName("root")
-        self.setWindowTitle(f"复旦 eLearning 课程同步 v{__version__}")
+        self.setWindowTitle(f"复小学 v{__version__}")
         self.setWindowIcon(app_icon())
         self.setMinimumSize(880, 620)
         self._restore_geometry()
@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_stats_row())
         layout.addWidget(self._build_sync_bar())
         layout.addWidget(self._build_course_splitter(), 1)
+        layout.addWidget(self._build_log_panel())
 
         self.setCentralWidget(central)
         self.setStatusBar(self._build_status_bar())
@@ -140,7 +141,7 @@ class MainWindow(QMainWindow):
 
         titles = QVBoxLayout()
         titles.setSpacing(1)
-        title = QLabel("复旦 eLearning 课程同步")
+        title = QLabel("复小学")
         title.setObjectName("titleLabel")
         subtitle = QLabel(f"{self.cfg.base_url.replace('https://', '')} · 本地目录 {self.cfg.root_dir}")
         subtitle.setObjectName("subtitleLabel")
@@ -169,6 +170,11 @@ class MainWindow(QMainWindow):
         settings_button.setCursor(Qt.PointingHandCursor)
         settings_button.clicked.connect(self._open_settings)
         header_layout.addWidget(settings_button)
+
+        log_button = QPushButton("日志")
+        log_button.setCursor(Qt.PointingHandCursor)
+        log_button.clicked.connect(self._toggle_log_panel)
+        header_layout.addWidget(log_button)
         return header
 
     def _build_stats_row(self) -> QWidget:
@@ -351,6 +357,66 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.course_splitter)
         return card
 
+    def _build_log_panel(self) -> QWidget:
+        """同步日志面板：默认折叠，点击"日志"展开。
+
+        SyncWorker 已经通过 log 信号输出详细日志，此前一直被丢弃；
+        这里把它接到界面上，方便用户排查同步 / 登录问题。
+        """
+        card = QFrame()
+        card.setObjectName("card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(18, 10, 18, 4)
+        title = QLabel("同步日志")
+        title.setObjectName("cardTitle")
+        header_row.addWidget(title)
+        header_row.addStretch()
+        hint = QLabel("仅显示本次运行以来的日志")
+        hint.setObjectName("hint")
+        header_row.addWidget(hint)
+        clear_button = QPushButton("清空")
+        clear_button.setCursor(Qt.PointingHandCursor)
+        clear_button.setStyleSheet("padding: 4px 10px; font-size: 12px;")
+        clear_button.clicked.connect(lambda: self.log_view.clear())
+        header_row.addWidget(clear_button)
+        layout.addLayout(header_row)
+
+        self.log_view = QTextEdit()
+        self.log_view.setObjectName("logView")
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumHeight(180)
+        self.log_view.setPlaceholderText("暂无日志，同步开始后这里会显示详细信息")
+        layout.addWidget(self.log_view)
+
+        self.log_panel = card
+        self._log_visible = False
+        card.setVisible(False)
+        return card
+
+    def _toggle_log_panel(self) -> None:
+        self._log_visible = not self._log_visible
+        self.log_panel.setVisible(self._log_visible)
+
+    def _on_log(self, level: str, message: str) -> None:
+        """把后台线程的日志写入面板（自动滚动、限制行数）。"""
+        if not hasattr(self, "log_view"):
+            return
+        stamp = datetime.datetime.now().strftime("%H:%M:%S")
+        self.log_view.append(f"[{stamp}] [{level.upper()}] {message}")
+        bar = self.log_view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+        doc = self.log_view.document()
+        excess = doc.blockCount() - 2000
+        if excess > 0:
+            cursor = self.log_view.textCursor()
+            cursor.movePosition(QTextCursor.Start)
+            cursor.movePosition(QTextCursor.Down, QTextCursor.KeepAnchor, excess)
+            cursor.removeSelectedText()
+
     def _build_status_bar(self) -> QStatusBar:
         bar = QStatusBar()
         bar.setSizeGripEnabled(False)
@@ -367,23 +433,18 @@ class MainWindow(QMainWindow):
         if method in ("", "token") and not self.cfg.token:
             # 老配置 method 为空时 load_config 会回退成 "token"；若钥匙串里有
             # 密码，就按密码登录处理，避免老用户每次启动都被要求重新登录。
-            if self.cfg.uis_username:
-                try:
-                    from ..password_login import load_password
-                    return bool(load_password(self.cfg.uis_username))
-                except Exception:
-                    return False
-            return False
+            from ..password_login import has_stored_password
+            if self.cfg.uis_username and has_stored_password(self.cfg.uis_username):
+                return True
+            # 没记住密码但会话 cookie 还在：交给静默登录验证有效性即可
+            return os.path.exists(self.cfg.cookie_file)
         if method == "token":
             return bool(self.cfg.token)
         if method == "password":
-            if not self.cfg.uis_username:
-                return False
-            try:
-                from ..password_login import load_password
-                return bool(load_password(self.cfg.uis_username))
-            except Exception:
-                return False
+            from ..password_login import has_stored_password
+            if self.cfg.uis_username and has_stored_password(self.cfg.uis_username):
+                return True
+            return os.path.exists(self.cfg.cookie_file)
         if method in ("cookie", "browser"):
             return os.path.exists(self.cfg.cookie_file)
         return False
@@ -419,8 +480,9 @@ class MainWindow(QMainWindow):
     def _on_first_login(self, user: dict) -> None:
         """首次登录成功：把方式写回配置，之后自动登录。"""
         from .config_io import update_config
+        method = "password" if user.get("remember") else "cookie"
         update_config(self.config_path, [
-            (("auth", "method"), "password"),
+            (("auth", "method"), method),
             (("auth", "uis_username"), user.get("username", "")),
         ])
         self.cfg = load_config(self.config_path)
@@ -444,7 +506,9 @@ class MainWindow(QMainWindow):
         self.sync_worker.progress.connect(self._on_progress)
         self.sync_worker.finished_ok.connect(self._on_sync_finished)
         self.sync_worker.failed.connect(self._on_sync_failed)
+        self.sync_worker.log.connect(self._on_log)
         self._set_busy(True, full=full)
+        self._on_log("info", f"开始{'全量' if full else '增量'}同步…")
         self.sync_worker.start()
 
     def _stop_sync(self) -> None:
@@ -507,11 +571,7 @@ class MainWindow(QMainWindow):
         downloaded = stats.get("files_downloaded", 0)
         bytes_downloaded = stats.get("bytes_downloaded", 0)
         if downloaded:
-            self.tray.notify(
-                "同步完成",
-                f"新增/更新 {downloaded} 个文件（{format_size(bytes_downloaded)}）"
-                f"{'，' + str(stats.get('errors')) + ' 个错误' if stats.get('errors') else ''}")
-            # 发送 Windows 桌面通知，点击打开同步目录
+            # Windows 桌面通知（点击可打开同步目录）；托盘提示作为无通知组件时的兜底
             self.notifier.notify(
                 "同步完成",
                 f"新增 {downloaded} 个文件，共 {format_size(bytes_downloaded)}",
@@ -519,12 +579,20 @@ class MainWindow(QMainWindow):
             )
         self._refresh_stats()
         self._reset_countdown()
+        if stats.get("errors"):
+            self._on_log("warning", f"本轮同步有 {stats['errors']} 个错误，详见日志面板")
+            self._log_visible = True
+            self.log_panel.setVisible(True)
         # 如果当前展开了文件列表，同步后刷新
         if self._file_panel_visible and self._current_file_course_id is not None:
             self._populate_file_list(self._current_file_course_id)
 
     def _on_sync_failed(self, message: str) -> None:
         self._set_busy(False)
+        self._on_log("error", f"同步失败：{message}")
+        self._log_visible = True
+        self.log_panel.setVisible(True)
+        self.tray.notify("同步失败", message)
         if "登录" in message or "密码" in message or "认证" in message:
             self._show_login_window()
 
@@ -924,7 +992,7 @@ class MainWindow(QMainWindow):
             return
         event.ignore()
         self.hide()
-        self.tray.notify("复旦 eLearning 同步",
+        self.tray.notify("复小学",
                          "已在后台运行，课程文件会自动保持同步。右键托盘图标可退出。")
 
     def _quit(self) -> None:

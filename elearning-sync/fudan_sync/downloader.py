@@ -212,22 +212,7 @@ class Downloader:
         return results
 
 
-def free_space_gb(path: str) -> float:
-    """获取磁盘剩余空间（GB）。"""
-    try:
-        if hasattr(os, "statvfs"):
-            st = os.statvfs(path)
-            return st.f_bavail * st.f_frsize / (1024 ** 3)
-    except OSError:
-        pass
-    try:
-        import ctypes  # Windows
-        free_bytes = ctypes.c_ulonglong(0)
-        ctypes.windll.kernel32.GetDiskFreeSpaceExW(
-            ctypes.c_wchar_p(path), None, None, ctypes.pointer(free_bytes))
-        return free_bytes.value / (1024 ** 3)
-    except Exception:  # pylint: disable=broad-except
-        return float("inf")
+from .utils import free_space_gb  # noqa: F401  （统一实现，避免与 utils 重复）
 
 
 def safe_rmtree(path: str) -> None:

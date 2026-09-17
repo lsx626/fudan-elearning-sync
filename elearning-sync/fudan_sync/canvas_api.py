@@ -50,7 +50,7 @@ class CanvasAPI:
         self.session = requests.Session()
         self.session.headers.update({
             "Accept": "application/json",
-            "User-Agent": "FudanELearningSync/1.0 (Canvas LMS sync tool)",
+            "User-Agent": "FuXiaoXue/1.0 (Canvas LMS sync tool)",
         })
         auth.apply(self.session)
 

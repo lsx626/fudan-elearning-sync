@@ -85,8 +85,9 @@ def load_config(path: str) -> AppConfig:
     cfg.auth_method = (auth.get("method") or "token").lower()
     cfg.token = auth.get("token") or ""
     cfg.uis_username = str(auth.get("uis_username") or "")
-    # 兼容两种键名
-    cfg.cookie_file = auth.get("method_cookie_file") or auth.get("cookie_file") or "cookies.json"
+    # 兼容三种键名：auth.method_cookie_file（旧）/ auth.cookie_file / 顶层 cookie_file
+    cfg.cookie_file = (auth.get("method_cookie_file") or auth.get("cookie_file")
+                       or data.get("cookie_file") or "cookies.json")
     # 环境变量覆盖（便于 CI / 脚本注入，避免明文写在配置里）
     cfg.token = os.environ.get("FUDAN_ELEARNING_TOKEN", cfg.token)
 

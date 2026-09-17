@@ -61,7 +61,7 @@ fun HomeScreen(viewModel: AppViewModel) {
             TopAppBar(
                 title = {
                     Text(
-                        selectedCourse?.course?.name ?: "复旦 eLearning 同步",
+                        selectedCourse?.course?.name ?: "复小学",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )

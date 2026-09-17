@@ -156,7 +156,7 @@ class WindowsNotifier(QObject):
             _plyer_notification.notify(
                 title=title,
                 message=message,
-                app_name="复旦 eLearning 同步",
+                app_name="复小学",
                 app_icon=icon,
                 timeout=5,
             )
@@ -197,7 +197,7 @@ class WindowsNotifier(QObject):
             import tempfile
             icon = app_icon()
             pixmap = icon.pixmap(64, 64)
-            tmp_path = os.path.join(tempfile.gettempdir(), "fudan_sync_notify.ico")
+            tmp_path = os.path.join(tempfile.gettempdir(), "fuxiaoxue_notify.ico")
             pixmap.save(tmp_path, "ICO")
             return tmp_path
         except Exception:  # pylint: disable=broad-except

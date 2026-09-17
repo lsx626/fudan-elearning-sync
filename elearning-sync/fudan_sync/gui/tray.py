@@ -19,7 +19,7 @@ class TrayController(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.tray = QSystemTrayIcon(app_icon(), parent)
-        self.tray.setToolTip("复旦 eLearning 同步")
+        self.tray.setToolTip("复小学")
         self.tray.activated.connect(self._on_activated)
 
         menu = QMenu()
@@ -48,7 +48,7 @@ class TrayController(QObject):
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
         self.sync_action.setEnabled(not busy)
-        self.tray.setToolTip("正在同步…" if busy else "复旦 eLearning 同步")
+        self.tray.setToolTip("正在同步…" if busy else "复小学")
 
     def set_autostart(self, enabled: bool) -> None:
         # blockSignals 避免回写时触发信号，导致设置对话框与注册表互相覆盖

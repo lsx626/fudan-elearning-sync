@@ -28,6 +28,7 @@ android-app/.idea/
 
 # 本地数据 / 密钥
 *.cookie.json
+cookies.json
 sync_state.db
 config.yaml
 elearning_files/

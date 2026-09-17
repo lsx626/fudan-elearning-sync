@@ -1,4 +1,4 @@
-# 复旦 eLearning 课程同步
+# 复小学 · 复旦大学 eLearning 课程同步
 
 自动同步复旦大学 eLearning（Canvas LMS）平台的课程文件到本地，支持 PC 与 Android 双端。
 
@@ -16,13 +16,13 @@
 
 ## 版本
 
-当前版本：**1.0.0**
+当前版本：**1.0.3**
 
 ## 目录结构
 
 ```
 ├── elearning-sync/          # PC 端（Python + PySide6）
-│   ├── gui.py               # GUI 入口
+│   ├── gui.py               # GUI 入口（桌面端“复小学”）
 │   ├── sync.py              # CLI 入口
 │   ├── fudan_sync/          # 核心同步引擎
 │   │   ├── password_login.py    # 新版 UIS 登录（RSA 加密）

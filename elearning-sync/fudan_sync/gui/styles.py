@@ -1,23 +1,24 @@
 """界面样式表：统一、克制的现代风格。
 
-配色以复旦蓝为主色调，浅色背景 + 白色卡片，强调可读性。
+复小学品牌配色：靛蓝（Indigo）为主色调，浅色背景 + 白色卡片，强调可读性。
+本文件与 icon.py、Android 端 ui/Theme.kt 共用同一套色板，保证双端风格一致。
 """
 from __future__ import annotations
 
 FONT_FAMILY = ("Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
                "Noto Sans CJK SC", "WenQuanYi Micro Hei", "Segoe UI", "sans-serif")
 
-ACCENT = "#1F4FA3"
-ACCENT_HOVER = "#18407F"
-ACCENT_PRESSED = "#123264"
-BG = "#F3F5FA"
+ACCENT = "#4F46E5"
+ACCENT_HOVER = "#4338CA"
+ACCENT_PRESSED = "#3730A3"
+BG = "#F6F7FC"
 CARD = "#FFFFFF"
 BORDER = "#E2E7F1"
 TEXT = "#1E2433"
 TEXT_SECONDARY = "#6B7488"
 TEXT_DISABLED = "#A2A9BB"
-SUCCESS = "#1E9E63"
-WARNING = "#D98A0B"
+SUCCESS = "#16A34A"
+WARNING = "#D97706"
 DANGER = "#D64545"
 
 QSS = f"""

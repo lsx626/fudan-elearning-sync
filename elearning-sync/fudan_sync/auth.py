@@ -137,22 +137,77 @@ def _restrict_file_permissions(path: str) -> None:
         pass
 
 
+def _persist_method(cfg, method: str) -> None:
+    """把自动识别出的认证方式写回配置文件，避免每次启动 / 同步都重新探测。
+
+    写盘失败时只更新内存配置（不致影响本次使用）。这里刻意只用 yaml，
+    不依赖 PySide6，保证 CLI 环境也能用。
+    """
+    cfg.auth_method = method
+    path = getattr(cfg, "config_path", "") or ""
+    if not path:
+        return
+    try:
+        import yaml  # pylint: disable=import-outside-toplevel
+        data = {}
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                data = yaml.safe_load(handle) or {}
+        data.setdefault("auth", {})["method"] = method
+        with open(path, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(data, handle, allow_unicode=True, sort_keys=False)
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
 def build_auth(cfg) -> BaseAuth:
     """根据配置构造认证对象（CLI 与 GUI 共用，避免逻辑重复）。
 
-    cfg 只需提供属性：auth_method, token, cookie_file, base_url, uis_username。
+    cfg 只需提供属性：auth_method, token, cookie_file, base_url, uis_username,
+    config_path。
     password 方式会先用钥匙串里的密码静默登录，再返回 Cookie 认证。
+
+    兼容老配置：auth.method 缺失时 load_config 会回退成 "token"。此时若没有
+    配置 token 但钥匙串里存着密码，应按密码登录处理并写回配置，而不是抛
+    “API Token 为空”——否则会出现“登录成功但一点同步就报没有 Token”。
     """
     method = (getattr(cfg, "auth_method", "") or "").lower()
+    token = (getattr(cfg, "token", "") or os.environ.get("FUDAN_ELEARNING_TOKEN", "") or "").strip()
+
+    if method in ("", "token") and not token:
+        # 没配 token：钥匙串里有密码就走密码登录，并把这个决定持久化
+        from .password_login import has_stored_password  # pylint: disable=import-outside-toplevel
+        username = getattr(cfg, "uis_username", "") or ""
+        if username and has_stored_password(username):
+            _persist_method(cfg, "password")
+            method = "password"
+        elif method == "token":
+            raise AuthError(
+                "尚未配置登录凭据：认证方式为 token 但未设置 token，"
+                "也没有保存的账号密码。请在软件中登录。")
+
     if method == "token":
-        return TokenAuth(cfg.token)
+        return TokenAuth(token)
     if method in ("cookie", "browser"):
         return CookieAuth(cfg.cookie_file)
     if method == "password":
         # 延迟导入，避免与 password_login 模块形成循环导入
-        from .password_login import login_with_stored_credentials  # pylint: disable=import-outside-toplevel
-        login_with_stored_credentials(cfg.base_url, cfg.uis_username, cfg.cookie_file)
-        return CookieAuth(cfg.cookie_file)
+        from .password_login import load_password, login_with_stored_credentials  # pylint: disable=import-outside-toplevel
+        username = getattr(cfg, "uis_username", "") or ""
+        cookie_file = getattr(cfg, "cookie_file", "") or "cookies.json"
+        # 记住了密码：静默重登，刷新会话，并把方式固化成 password
+        if username and load_password(username) is not None:
+            _persist_method(cfg, "password")
+            login_with_stored_credentials(cfg.base_url, username, cookie_file)
+            return CookieAuth(cookie_file)
+        # 没记住密码（登录时未勾选“记住密码”）：复用已保存的会话 cookie，
+        # 并把认证方式改写为 cookie，避免下次启动再走 password 却找不到密码
+        if cookie_file and os.path.exists(cookie_file):
+            _persist_method(cfg, "cookie")
+            return CookieAuth(cookie_file)
+        raise AuthError(
+            "登录会话已失效且未保存密码，请在软件中重新登录"
+            "（或在登录时勾选“记住密码”）")
     raise AuthError(f"未知认证方式: {method}")
 
 

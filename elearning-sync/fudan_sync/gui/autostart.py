@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import sys
 
-APP_DISPLAY_NAME = "复旦 eLearning 同步"
+APP_DISPLAY_NAME = "复小学"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 

@@ -9,7 +9,8 @@ from typing import Callable, Dict, List, Optional
 
 from .config import AppConfig
 from .crawler import Crawler, CrawlResult, RemoteFile
-from .downloader import DownloadResult, DownloadTask, Downloader, free_space_gb
+from .downloader import DownloadResult, DownloadTask, Downloader
+from .utils import free_space_gb
 from .state import StateStore
 from .utils import (format_size, is_installer_file, now_utc,
                     sanitize_path_component, unique_path)
@@ -48,7 +49,11 @@ class SyncStats:
     def add(self, other: "SyncStats") -> None:
         for fld in other.__dataclass_fields__:
             value = getattr(other, fld)
-            if fld in ("started_at", "mode", "notes"):
+            if fld in ("started_at", "mode"):
+                continue
+            if fld == "notes":
+                # 备注是列表：合并保留，避免单门课程的问题被汇总时丢弃
+                self.notes.extend(other.notes)
                 continue
             if isinstance(value, (int, float)):
                 setattr(self, fld, getattr(self, fld) + value)
@@ -126,9 +131,6 @@ class SyncEngine:
                 continue
             if cfg.include_terms and not any(t in info.term for t in cfg.include_terms):
                 continue
-            if "StudentEnrollment" in str(raw.get("enrollments") or "") and \
-               cfg.enrollment_type == "student":
-                pass  # 学生视角：保留
             courses.append(info)
 
         # 持久化课程清单
@@ -203,6 +205,12 @@ class SyncEngine:
         result: CrawlResult = self.crawler.crawl_course(
             course.id, collect_pages=self.cfg.sync.archive_pages)
         stats.files_found = len(result.files)
+        seen_ids = [r.file_id for r in result.files.values()]
+
+        # 先处理远端删除：即使课程这轮一个文件都没有，只要文件列表是成功拉取的，
+        # 之前已下载的文件若真的在远端被删除，也应正确标记（prune 时同步删本地）。
+        # 注意必须传入本轮真实见到的 file_id 列表，否则会把全部文件误判为已删除。
+        self._mark_remote_removed(course, result, stats, seen_ids=seen_ids)
 
         # 空课程（组织站点、未开课课程）：不留空目录
         if self.cfg.sync.skip_empty_courses and not result.files and not result.pages:
@@ -213,10 +221,8 @@ class SyncEngine:
 
         # ---- 构建下载任务 ----
         tasks: List[DownloadTask] = []
-        seen_ids: List[int] = []
         claimed_paths: Dict[str, int] = {}  # 本地路径 -> 已占用的 file_id
         for remote in result.files.values():
-            seen_ids.append(remote.file_id)
             skip_reason = self._should_skip(remote)
             if skip_reason:
                 if skip_reason == "locked":
@@ -317,14 +323,28 @@ class SyncEngine:
         if self.cfg.sync.archive_pages and result.pages:
             stats.pages_archived = self._archive_pages(course_dir, result.pages)
 
-        # ---- 远端删除处理 ----
+        return stats
+
+    def _mark_remote_removed(self, course: CourseInfo, result: CrawlResult,
+                             stats: SyncStats, seen_ids: Optional[List[int]]) -> None:
+        """标记 / 清理远端已删除的文件。
+
+        仅当课程文件列表成功拉取时，"本轮未见的文件 = 远端已删除"才成立；
+        拉取失败（网络抖动 / 限流 / 403）时 result.files 为空，此时误判会把
+        全部文件标为远端已删除，开启 prune 时甚至会删除本地已下载的文件。
+        """
+        if not result.files_listed_ok:
+            if result.errors:
+                stats.notes.append(f"课程 {course.name} 文件列表拉取失败，"
+                                   f"已保留本地文件，下轮重试")
+            return
+        ids = seen_ids if seen_ids is not None else []
         removed = self.state.mark_missing_files(
-            course.id, seen_ids, prune=self.cfg.sync.prune)
-        stats.files_removed = removed
+            course.id, ids, prune=self.cfg.sync.prune)
+        stats.files_removed += removed
         if removed and self.cfg.sync.prune:
             self._log("info", "课程 [%s] 远端已删除 %d 个文件，本地已同步删除",
                       course.name, removed)
-        return stats
 
     def _on_download_done(self, res: DownloadResult, stats: SyncStats) -> None:
         status = "跳过(已存在)" if res.skipped else "完成"
@@ -381,7 +401,7 @@ class SyncEngine:
                     "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n"
                     "<meta charset=\"utf-8\">\n"
                     f"<title>{html_lib.escape(title)}</title>\n"
-                    "<meta name=\"generator\" content=\"FudanELearningSync\">\n"
+                    "<meta name=\"generator\" content=\"FuXiaoXue\">\n"
                     "<style>body{font-family:sans-serif;max-width:900px;"
                     "margin:2em auto;padding:0 1em;line-height:1.6}"
                     "img{max-width:100%}table{border-collapse:collapse}"

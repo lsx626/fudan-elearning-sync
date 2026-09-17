@@ -27,7 +27,7 @@ class SettingsDialog(QFrame):
         super().__init__(parent)
         self.cfg = cfg
         self.config_path = config_path
-        self.setWindowTitle("设置 · 复旦 eLearning 同步")
+        self.setWindowTitle("设置 · 复小学")
         self.setWindowIcon(app_icon())
         self.setObjectName("root")
         self.setMinimumSize(560, 660)
@@ -122,8 +122,11 @@ class SettingsDialog(QFrame):
         # ---- 账号 ----
         account_box = QGroupBox("账号")
         account_form = QFormLayout(account_box)
+        method_names = {"password": "账号密码（自动登录）", "cookie": "会话 Cookie",
+                        "browser": "浏览器登录", "token": "API Token"}
+        method_text = method_names.get(self.cfg.auth_method, self.cfg.auth_method or "未设置")
         account_label = QLabel(f"{self.cfg.uis_username or '（未登录）'}"
-                               f"（登录方式：{self.cfg.auth_method}）")
+                               f"（登录方式：{method_text}）")
         account_label.setWordWrap(True)
         account_form.addRow("当前账号", account_label)
         logout_button = QPushButton("退出登录并清除保存的密码")

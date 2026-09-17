@@ -10,7 +10,10 @@ from __future__ import annotations
 import os
 import sys
 
-APP_NAME = "fudan-elearning-sync"
+# 应用显示名（v1.0.3 起品牌更名为“复小学”，但数据目录名保持不变，
+# 老用户已下载的课程文件、配置与状态库可以原样复用）。
+APP_NAME = "复小学"
+_LEGACY_APP_NAME = "fudan-elearning-sync"
 
 
 def is_frozen() -> bool:
@@ -25,8 +28,33 @@ def bundle_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def _legacy_data_dir() -> str | None:
+    """老版本的数据目录；存在且非空时返回，便于平滑迁移。"""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    legacy = os.path.join(base, _LEGACY_APP_NAME)
+    try:
+        if os.path.isdir(legacy) and os.listdir(legacy):
+            return legacy
+    except OSError:
+        # 目录存在但不可读（权限受限等）：无法判断是否有数据，当作没有
+        pass
+    return None
+
+
 def app_data_dir() -> str:
-    """用户数据目录（存放配置、状态库、日志）。"""
+    """用户数据目录（存放配置、状态库、日志）。
+
+    老版本（<=1.0.2）使用 fudan-elearning-sync 目录，里面可能有用户已
+    下载的课程文件与状态库；改名复小学后优先复用该目录，避免重新下载。
+    """
+    legacy = _legacy_data_dir()
+    if legacy:
+        return legacy
     if sys.platform == "win32":
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
     elif sys.platform == "darwin":

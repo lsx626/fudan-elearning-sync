@@ -66,7 +66,7 @@ fun LoginScreen(
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Text("复旦 eLearning 同步", style = MaterialTheme.typography.headlineSmall)
+            Text("复小学", style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.height(6.dp))
             Text(
                 "请输入复旦大学统一身份认证（UIS）账号与密码",

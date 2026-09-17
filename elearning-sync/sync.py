@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""复旦大学 eLearning (Canvas LMS) 课程文件同步工具 - 命令行入口。
+"""复小学 - 复旦大学 eLearning (Canvas LMS) 课程文件同步工具（命令行入口）。
 
 常用命令：
   python sync.py login --method password   # 用 UIS 账号密码登录（密码存入系统钥匙串，之后自动登录）

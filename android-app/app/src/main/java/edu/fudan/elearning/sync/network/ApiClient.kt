@@ -16,7 +16,7 @@ object ApiClient {
         .addInterceptor { chain ->
             val original = chain.request()
             val builder = original.newBuilder()
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android) FudanELearningSync/1.0")
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android) FuXiaoXue/1.0.3")
                 .header("Accept", "application/json")
             if (canvasSession.isNotEmpty()) {
                 builder.header("Cookie", "_normandy_session=$canvasSession")

@@ -10,7 +10,8 @@ from PySide6.QtCore import QThread, Signal
 from ..auth import AuthError, CookieAuth, build_auth
 from ..canvas_api import CanvasAPI
 from ..config import ensure_runtime_dirs
-from ..password_login import PasswordLoginError, load_password, login_and_save
+from ..password_login import (PasswordLoginError, has_stored_password,  # noqa: F401
+                              load_password, login_and_save)
 from ..state import StateStore
 from ..sync_engine import SyncEngine
 
@@ -70,7 +71,7 @@ class LoginWorker(QThread):
                 self.failed.emit("登录后无法获取用户信息，请重试", False)
                 return
             # 立刻把认证方式持久化为密码登录，之后启动即可静默登录。
-            self._persist_password_method()
+            self._persist_auth_method()
             self.succeeded.emit({
                 "name": user.get("name") or user.get("short_name") or self.username,
                 "id": user.get("id"),
@@ -84,15 +85,20 @@ class LoginWorker(QThread):
         finally:
             logger.removeHandler(handler)
 
-    def _persist_password_method(self) -> None:
-        """把认证方式落盘为 password，并同步更新内存中的配置。"""
+    def _persist_auth_method(self) -> None:
+        """把认证方式落盘，并同步更新内存中的配置。
+
+        记住了密码就写 password（之后静默重登）；没记住就写 cookie，
+        复用本次登录已保存的会话。两者都记下账号名，方便界面展示。
+        """
         from .config_io import update_config
+        method = "password" if self.remember else "cookie"
         try:
             update_config(self.cfg.config_path, [
-                (("auth", "method"), "password"),
+                (("auth", "method"), method),
                 (("auth", "uis_username"), self.username),
             ])
-            self.cfg.auth_method = "password"
+            self.cfg.auth_method = method
             self.cfg.uis_username = self.username
         except OSError:
             # 配置写失败不影响本次登录结果，主界面会在登录成功后再写一次
@@ -112,20 +118,15 @@ class SilentLoginWorker(QThread):
     def run(self) -> None:
         try:
             method = (self.cfg.auth_method or "").lower()
-            # 老配置 method 为空时 load_config 会回退成 "token"。若没有 token
-            # 但钥匙串里存着密码，就按密码登录处理，避免误报要求重新登录。
-            if method in ("", "token") and not self.cfg.token:
-                if self.cfg.uis_username and load_password(self.cfg.uis_username):
-                    method = "password"
-                    self.cfg.auth_method = "password"
-            # token 方式：没有 token 或已知失效都直接提示重新登录
-            if method == "token" and not self.cfg.token:
-                self.failed.emit("尚未配置登录凭据")
-                return
-            # password 方式：钥匙串里没有密码就提示
-            if method == "password" and not load_password(self.cfg.uis_username):
-                self.failed.emit("尚未保存登录凭据")
-                return
+            token = self.cfg.token or ""
+            # 既没配 token、钥匙串里也没存密码：引导用户去登录。
+            # 认证方式的自动回退（老配置 method 缺失 => password）与持久化
+            # 统一交给 build_auth 处理，这里只做"是否有可用凭据"的预判。
+            if method in ("", "token") and not token:
+                if not (self.cfg.uis_username
+                        and has_stored_password(self.cfg.uis_username)):
+                    self.failed.emit("尚未配置登录凭据，请先登录")
+                    return
             auth = build_auth(self.cfg)
             api = CanvasAPI(self.cfg.base_url, auth)
             user = api.get_current_user()
@@ -140,8 +141,8 @@ class SilentLoginWorker(QThread):
             self.failed.emit(str(exc))
         except Exception as exc:  # pylint: disable=broad-except
             msg = str(exc)
-            # token 401 统一描述为登录已过期
-            if method == "token" and "401" in msg:
+            # 401 统一描述为登录已过期
+            if "401" in msg:
                 self.failed.emit("登录已过期，请使用 UIS 账号密码重新登录")
             else:
                 self.failed.emit(f"自动登录失败：{exc}")

@@ -4,26 +4,19 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- 圆角方形背景：靛蓝渐变（与 PC 端 build_assets/app.ico 同源） -->
-    <path
-        android:fillColor="#6366F1"
-        android:pathData="M20,20 h68 a12,12 0 0 1 12,12 v44 a12,12 0 0 1 -12,12 h-68 a12,12 0 0 1 -12,-12 v-44 a12,12 0 0 1 12,-12 z" />
-    <!-- 学士帽帽板 -->
+    <!-- 前景图形占全视口 2/3 安全区内的学士帽（与 PC 端同源几何） -->
     <path
         android:fillColor="#FFFFFF"
         android:pathData="M54,37 L86,51 L54,64 L22,51 Z" />
-    <!-- 学士帽帽箍 -->
     <path
         android:fillColor="#DDE2F9"
         android:pathData="M36,62 L72,62 L67,77 L41,77 Z" />
-    <!-- 帽穗流苏 -->
     <path
         android:strokeColor="#FFFFFF"
         android:strokeWidth="3"
         android:strokeLineCap="round"
         android:fillColor="#00000000"
         android:pathData="M86,51 L86,76" />
-    <!-- 帽穗结 -->
     <path
         android:fillColor="#FFFFFF"
         android:pathData="M86,78 m-3.2,0 a3.2,3.2 0 1 0 6.4,0 a3.2,3.2 0 1 0 -6.4,0 z" />

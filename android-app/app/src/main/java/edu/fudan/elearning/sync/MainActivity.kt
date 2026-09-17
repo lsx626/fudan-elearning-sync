@@ -12,7 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import edu.fudan.elearning.sync.ui.AppViewModel
-import edu.fudan.elearning.sync.ui.FudanSyncTheme
+import edu.fudan.elearning.sync.ui.FuXiaoXueTheme
 import edu.fudan.elearning.sync.ui.HomeScreen
 import edu.fudan.elearning.sync.ui.LoginScreen
 import edu.fudan.elearning.sync.ui.LoginState
@@ -28,7 +28,7 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermission()
 
         setContent {
-            FudanSyncTheme {
+            FuXiaoXueTheme {
                 val viewModel: AppViewModel = viewModel()
                 val loginState by viewModel.loginState.collectAsState()
                 when (val state = loginState) {

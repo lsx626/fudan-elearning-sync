@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""复旦大学 eLearning 同步工具 - 图形界面入口。
+"""复小学 - 复旦大学 eLearning 课程同步工具（图形界面入口）。
 
 首次打开只需输入 UIS 账号密码，之后自动登录、自动同步。
 """
@@ -27,7 +27,7 @@ SINGLE_INSTANCE_NAME = "fudan-elearning-sync-gui"
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="复旦大学 eLearning 课程同步（图形界面）")
+    parser = argparse.ArgumentParser(description="复小学：复旦大学 eLearning 课程同步（图形界面）")
     parser.add_argument("--minimized", action="store_true",
                         help="启动后最小化到系统托盘")
     parser.add_argument("--config", help="指定配置文件（默认自动检测）")
@@ -44,6 +44,9 @@ def ensure_single_instance() -> bool:
         socket.waitForBytesWritten(1000)
         return False
     server = QLocalServer()
+    # 上次退出非正常（崩溃 / 杀进程）时服务名会残留，先清理再监听，
+    # 否则新实例会误以为已有实例在运行而启动失败。
+    QLocalServer.removeServer(SINGLE_INSTANCE_NAME)
     server.listen(SINGLE_INSTANCE_NAME)
     return server
 
@@ -55,13 +58,16 @@ def bootstrap_config() -> str:
     if not os.path.exists(path):
         save_yaml(path, {
             "base_url": "https://elearning.fudan.edu.cn",
-            "auth": {"method": "password", "uis_username": ""},
+            "auth": {
+                "method": "password",
+                "uis_username": "",
+                "cookie_file": os.path.join(os.path.dirname(path), "cookies.json"),
+            },
             "root_dir": default_root_dir(),
             "state_db": os.path.join(os.path.dirname(path), "sync_state.db"),
-            "cookie_file": os.path.join(os.path.dirname(path), "cookies.json"),
             "log_file": os.path.join(os.path.dirname(path), "sync.log"),
             "sync": {
-                "interval_minutes": 30,
+                "interval_minutes": 15,
                 "only_favorites": False,
                 "enrollment_type": "student",
                 "archive_pages": True,
@@ -82,7 +88,7 @@ def main(argv=None) -> int:
     args = parse_args(argv)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("复旦 eLearning 同步")
+    app.setApplicationName("复小学")
     app.setWindowIcon(app_icon())
     app.setQuitOnLastWindowClosed(False)  # 关闭窗口仍驻留托盘
 
