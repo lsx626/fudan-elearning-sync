@@ -78,13 +78,14 @@ class UisAuthenticator(
     private fun doLogin(username: String, password: String): LoginResult {
         val idpBase = "https://id.fudan.edu.cn/idp"
 
-        // Step 1: 获取登录上下文（用 queryParameter 避免 URL 编码问题）
+        // Step 1: 获取登录上下文（lck/entityId 在 URL fragment 里，不在 query string）
         val loginResp = client.newCall(
             Request.Builder().url("$baseUrl/login").get().build()
         ).execute()
-        val finalUrl = loginResp.request.url
-        val lck = finalUrl.queryParameter("lck") ?: ""
-        val entityId = finalUrl.queryParameter("entityId") ?: ""
+        val fullUrl = loginResp.request.url.toString()
+        val lck = Regex("lck=([^&]+)").find(fullUrl)?.groupValues?.get(1) ?: ""
+        var entityId = Regex("entityId=([^&]+)").find(fullUrl)?.groupValues?.get(1) ?: ""
+        entityId = java.net.URLDecoder.decode(entityId, "UTF-8")
         if (lck.isEmpty() || entityId.isEmpty()) {
             return LoginResult.Failure("无法获取登录上下文，请检查网络")
         }
@@ -167,13 +168,21 @@ class UisAuthenticator(
             return LoginResult.Failure("登录成功但未获取到登录令牌")
         }
 
-        // Step 6: 回调完成 SSO（表单 POST，正确前缀为 /idp/）
-        client.newCall(
+        // Step 6: 回调 authnEngine，拿到 CAS ticket 跳转地址
+        val engineResp = client.newCall(
             Request.Builder()
                 .url("https://id.fudan.edu.cn/idp/authCenter/authnEngine")
                 .post(FormBody.Builder().add("loginToken", loginToken).build())
                 .build()
-        ).execute().close()
+        ).execute()
+        val engineBody = engineResp.body?.string() ?: ""
+        val ticketUrl = Regex("""locationValue\s*=\s*["']([^"']+)["']""")
+            .find(engineBody)?.groupValues?.get(1)
+        if (!ticketUrl.isNullOrEmpty()) {
+            client.newCall(
+                Request.Builder().url(ticketUrl).get().build()
+            ).execute().close()
+        }
 
         // Step 7: 访问首页，确认登录并取 CSRF
         val homeResp = client.newCall(
@@ -181,7 +190,7 @@ class UisAuthenticator(
         ).execute()
         val body = homeResp.body?.string() ?: ""
         val canvasCookie = cookieJar.cookies
-            .firstOrNull { it.name == "_canvas_session" }?.value ?: ""
+            .firstOrNull { it.name == "_normandy_session" }?.value ?: ""
         if (canvasCookie.isEmpty()) {
             return LoginResult.Failure("登录未成功，请检查账号密码")
         }
