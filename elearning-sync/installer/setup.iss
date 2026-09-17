@@ -1,8 +1,8 @@
 ; 复旦 eLearning 课程同步 - Inno Setup 安装脚本
-; 版本: 1.0.0
+; 版本: 1.0.1
 
 #define MyAppName "复旦 eLearning 课程同步"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Fudan ELearning Sync"
 #define MyAppExeName "复旦eLearning同步.exe"
 #define MyAppId "{{8E6B7D1C-3F6E-4A8C-9B5E-2A3F7C9D1E22}"
@@ -18,7 +18,7 @@ AllowNoIcons=yes
 LicenseFile=..\LICENSE
 InfoBeforeFile=..\README.md
 OutputDir=release
-OutputBaseFilename=复旦eLearning同步-Setup-v1.0.0
+OutputBaseFilename=复旦eLearning同步-Setup-v1.0.1
 SetupIconFile=..\build_assets\app.ico
 Compression=lzma2/ultra
 SolidCompression=yes

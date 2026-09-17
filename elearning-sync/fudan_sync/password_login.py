@@ -97,13 +97,28 @@ def password_login(base_url: str, username: str, password: str,
     except requests.RequestException as exc:
         raise PasswordLoginError(f"无法访问登录页：{exc}") from exc
 
-    final_url = resp.url or ""
-    lck_match = re.search(r"lck=([^&]+)", final_url)
-    entity_match = re.search(r"entityId=([^&]+)", final_url)
-    if not lck_match or not entity_match:
-        raise PasswordLoginError("无法获取登录上下文，请检查网络或稍后重试")
-    lck = lck_match.group(1)
-    entity_id = entity_match.group(1)
+    # lck/entityId 位于重定向后 URL 的 fragment（# 之后），兼容不同网络环境下的
+    # 重定向行为：依次从最终地址、各跳重定向头、页面正文中查找。
+    candidates = []
+    if resp.url:
+        candidates.append(resp.url)
+    for hop in resp.history:
+        location = hop.headers.get("Location")
+        if location:
+            candidates.append(location)
+    candidates.append(resp.text or "")
+
+    lck = entity_id = None
+    for cand in candidates:
+        lck_match = re.search(r"lck=([^&\"'#\s]+)", cand)
+        entity_match = re.search(r"entityId=([^&\"'#\s]+)", cand)
+        if lck_match and entity_match:
+            lck = lck_match.group(1)
+            entity_id = entity_match.group(1)
+            break
+    if not lck or not entity_id:
+        raise PasswordLoginError(
+            "无法获取登录上下文（lck/entityId 缺失），请检查网络或稍后重试")
 
     # ---------- Step 2: 查询认证方式，获取 authChainCode ----------
     try:
@@ -193,18 +208,36 @@ def password_login(base_url: str, username: str, password: str,
     except requests.RequestException as exc:
         raise PasswordLoginError(f"完成 SSO 跳转失败：{exc}") from exc
 
-    # authnEngine 返回的是含 JS 跳转的中间页，需解析出 CAS ticket 地址
+    # authnEngine 返回的是含 JS 跳转的中间页，需解析出 CAS ticket 地址；
+    # 个别网络环境下也可能直接 302 到 ticket 地址，一并列作候选。
     body = resp.text or ""
+    ticket_candidates = []
     ticket_match = re.search(r'locationValue\s*=\s*["\']([^"\']+)["\']', body)
-    if not ticket_match:
-        ticket_match = re.search(
-            r'["\'](https?://[^"\']*/login/cas\?ticket=[^"\']+)["\']', body)
     if ticket_match:
-        ticket_url = ticket_match.group(1)
+        ticket_candidates.append(ticket_match.group(1))
+    ticket_match = re.search(r'["\'](https?://[^"\']*/login/cas\?ticket=[^"\']+)["\']', body)
+    if ticket_match:
+        ticket_candidates.append(ticket_match.group(1))
+    redirect = resp.headers.get("Location", "")
+    if redirect.startswith("http") and "ticket=" in redirect:
+        ticket_candidates.append(redirect)
+
+    if not ticket_candidates:
+        snippet = re.sub(r"\s+", " ", body[:200])
+        raise PasswordLoginError(
+            "登录跳转异常：服务器应答中没有 CAS 回调地址。"
+            f"（HTTP {resp.status_code}；可稍后重试，或检查网络代理设置）{snippet}")
+
+    cas_ok = False
+    for ticket_url in ticket_candidates:
         try:
             session.get(ticket_url, allow_redirects=True, timeout=timeout)
-        except requests.RequestException as exc:
-            raise PasswordLoginError(f"CAS 认证失败：{exc}") from exc
+            cas_ok = True
+            break
+        except requests.RequestException:
+            continue  # 尝试下一个候选地址
+    if not cas_ok:
+        raise PasswordLoginError("CAS 认证失败：所有回调地址均无法访问，请检查网络")
 
     # ---------- Step 7: 访问 eLearning 首页，确认登录成功并提取 CSRF ----------
     try:
@@ -216,7 +249,9 @@ def password_login(base_url: str, username: str, password: str,
     # 确认已登录（存在 Canvas 会话 Cookie）
     session_names = {c.name for c in session.cookies}
     if not (session_names & {"_normandy_session", "_canvas_session"}):
-        raise PasswordLoginError("登录未成功，请检查账号密码是否正确")
+        raise PasswordLoginError(
+            "登录未成功：未获取到 eLearning 会话。请确认账号密码正确；"
+            f"如一直失败请检查网络代理。当前 Cookie：{sorted(session_names) or '无'}")
 
     csrf_match = CSRF_META_RE.search(body)
     csrf_token = csrf_match.group(1) if csrf_match else None

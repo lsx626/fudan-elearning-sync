@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame,
                                QPushButton, QSplitter, QStatusBar, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
+from .. import __version__
 from ..auth import AuthError
 from ..config import load_config
 from ..state import StateStore
@@ -88,7 +89,7 @@ class MainWindow(QMainWindow):
         self._current_file_course_id: Optional[int] = None  # 当前展开文件列表的课程 ID
 
         self.setObjectName("root")
-        self.setWindowTitle("复旦 eLearning 课程同步")
+        self.setWindowTitle(f"复旦 eLearning 课程同步 v{__version__}")
         self.setWindowIcon(app_icon())
         self.setMinimumSize(880, 620)
         self._restore_geometry()
