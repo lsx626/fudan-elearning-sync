@@ -364,6 +364,16 @@ class MainWindow(QMainWindow):
     def _has_stored_credentials(self) -> bool:
         """判断是否已有可用于静默登录的凭据。"""
         method = (self.cfg.auth_method or "").lower()
+        if method in ("", "token") and not self.cfg.token:
+            # 老配置 method 为空时 load_config 会回退成 "token"；若钥匙串里有
+            # 密码，就按密码登录处理，避免老用户每次启动都被要求重新登录。
+            if self.cfg.uis_username:
+                try:
+                    from ..password_login import load_password
+                    return bool(load_password(self.cfg.uis_username))
+                except Exception:
+                    return False
+            return False
         if method == "token":
             return bool(self.cfg.token)
         if method == "password":
@@ -883,6 +893,7 @@ class MainWindow(QMainWindow):
         self.tray.autostart_toggled.connect(self._on_tray_autostart)
         self.tray.quit_requested.connect(self._quit)
         self.tray.set_autostart(self._autostart_enabled_safe())
+        self.tray.show()
 
     @staticmethod
     def _autostart_enabled_safe() -> bool:

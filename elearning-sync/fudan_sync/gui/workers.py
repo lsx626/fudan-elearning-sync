@@ -7,7 +7,7 @@ from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
 
-from ..auth import AuthError, build_auth
+from ..auth import AuthError, CookieAuth, build_auth
 from ..canvas_api import CanvasAPI
 from ..config import ensure_runtime_dirs
 from ..password_login import PasswordLoginError, load_password, login_and_save
@@ -59,12 +59,18 @@ class LoginWorker(QThread):
         try:
             login_and_save(self.cfg.base_url, self.username, self.password,
                            self.cfg.cookie_file, store_credentials=self.remember)
-            auth = build_auth(self.cfg)  # 复用刚保存的 cookie
+            # 登录已把会话 cookie 落盘，直接用 cookie 验证用户信息。
+            # 不能调 build_auth(self.cfg)：首次登录时配置里 method 还是空的，
+            # load_config 会把它回退成默认的 "token"，于是走到 TokenAuth("") 抛
+            # “API Token 为空”。
+            auth = CookieAuth(self.cfg.cookie_file)
             api = CanvasAPI(self.cfg.base_url, auth, logger=logger)
             user = api.get_current_user()
             if not user.get("id"):
                 self.failed.emit("登录后无法获取用户信息，请重试", False)
                 return
+            # 立刻把认证方式持久化为密码登录，之后启动即可静默登录。
+            self._persist_password_method()
             self.succeeded.emit({
                 "name": user.get("name") or user.get("short_name") or self.username,
                 "id": user.get("id"),
@@ -77,6 +83,20 @@ class LoginWorker(QThread):
             self.failed.emit(f"登录失败：{exc}", False)
         finally:
             logger.removeHandler(handler)
+
+    def _persist_password_method(self) -> None:
+        """把认证方式落盘为 password，并同步更新内存中的配置。"""
+        from .config_io import update_config
+        try:
+            update_config(self.cfg.config_path, [
+                (("auth", "method"), "password"),
+                (("auth", "uis_username"), self.username),
+            ])
+            self.cfg.auth_method = "password"
+            self.cfg.uis_username = self.username
+        except OSError:
+            # 配置写失败不影响本次登录结果，主界面会在登录成功后再写一次
+            pass
 
 
 class SilentLoginWorker(QThread):
@@ -92,6 +112,12 @@ class SilentLoginWorker(QThread):
     def run(self) -> None:
         try:
             method = (self.cfg.auth_method or "").lower()
+            # 老配置 method 为空时 load_config 会回退成 "token"。若没有 token
+            # 但钥匙串里存着密码，就按密码登录处理，避免误报要求重新登录。
+            if method in ("", "token") and not self.cfg.token:
+                if self.cfg.uis_username and load_password(self.cfg.uis_username):
+                    method = "password"
+                    self.cfg.auth_method = "password"
             # token 方式：没有 token 或已知失效都直接提示重新登录
             if method == "token" and not self.cfg.token:
                 self.failed.emit("尚未配置登录凭据")

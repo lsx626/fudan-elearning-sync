@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,23 +14,36 @@ android {
         applicationId = "edu.fudan.elearning.sync"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
     }
 
     signingConfigs {
         create("release") {
-            storeFile = file("../release.keystore")
-            storePassword = "fudan2026"
-            keyAlias = "fudansync"
-            keyPassword = "fudan2026"
+            // 签名密钥与密码只放在 local.properties（不入库），克隆后若无配置则
+            // 自动回退 debug 签名，保证仓库可独立构建。
+            val props = Properties().apply {
+                rootProject.file("local.properties").takeIf { it.exists() }
+                    ?.inputStream()?.use { load(it) }
+            }
+            val store = file(props.getProperty("fudanSign.storeFile") ?: "../release.keystore")
+            if (store.exists()) {
+                storeFile = store
+                storePassword = props.getProperty("fudanSign.storePassword") ?: ""
+                keyAlias = props.getProperty("fudanSign.keyAlias") ?: "fudansync"
+                keyPassword = props.getProperty("fudanSign.keyPassword") ?: ""
+            }
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            val releaseSigning = signingConfigs.getByName("release")
+            // 无发布密钥时回退 debug 签名，保证仓库克隆后可直接构建。
+            signingConfig =
+                if (releaseSigning.storeFile?.exists() == true) releaseSigning
+                else signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

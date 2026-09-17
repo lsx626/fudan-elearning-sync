@@ -55,7 +55,7 @@ def bootstrap_config() -> str:
     if not os.path.exists(path):
         save_yaml(path, {
             "base_url": "https://elearning.fudan.edu.cn",
-            "auth": {"method": "", "uis_username": ""},
+            "auth": {"method": "password", "uis_username": ""},
             "root_dir": default_root_dir(),
             "state_db": os.path.join(os.path.dirname(path), "sync_state.db"),
             "cookie_file": os.path.join(os.path.dirname(path), "cookies.json"),
