@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+*.spec.bak
+
+# PC 端打包产物
+elearning-sync/build/
+elearning-sync/dist/
+elearning-sync/installer/release/
+elearning-sync/_debug*.py
+elearning-sync/_debug*.html
+elearning-sync/_test_login.py
+
+# Android
+android-app/.gradle/
+android-app/build/
+android-app/app/build/
+android-app/local.properties
+android-app/release.keystore
+android-app/.idea/
+*.apk
+*.aab
+
+# 本地数据 / 密钥
+*.cookie.json
+config.yaml
+elearning_files/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">复旦eLearning同步</string>
+    <string name="notification_channel_sync">同步通知</string>
+    <string name="notification_channel_sync_desc">课程文件同步状态通知</string>
+</resources>

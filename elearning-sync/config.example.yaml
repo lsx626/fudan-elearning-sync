@@ -1,0 +1,70 @@
+# ============================================================
+# 复旦大学 eLearning 同步工具 配置文件
+#   平台：https://elearning.fudan.edu.cn  (基于 Canvas LMS)
+# ============================================================
+
+base_url: https://elearning.fudan.edu.cn
+
+# ------------------------------------------------------------
+# 认证配置（三选一，优先级：token > cookie > browser）
+# ------------------------------------------------------------
+auth:
+  # 方式一：Canvas API Token（推荐，稳定且不受 UIS 页面变化影响）
+  #   获取路径：登录 eLearning -> 右上角头像 -> 设置(Settings) -> 批准的集成
+  #            (Approved Integrations) -> 新建访问令牌(New Access Token)
+  method: token
+  token: ""
+
+  # 方式二：直接使用浏览器 Cookie（从浏览器导出 _canvas_session 等）
+  method_cookie_file: cookies.json
+
+  # 方式三：浏览器交互式登录（需要安装 playwright，运行 sync.py login --method browser）
+  # 登录成功后 cookie 会自动保存到上面的 method_cookie_file
+
+# ------------------------------------------------------------
+# 本地同步根目录：所有课程文件会下载到此处
+#   结构：<root_dir>/<课程名> [<课程代码>]/<Canvas目录结构>/<文件名>
+# ------------------------------------------------------------
+root_dir: ./elearning_files
+
+# 状态数据库：记录已下载文件、课程清单，增量同步依赖此文件
+state_db: ./sync_state.db
+
+# 日志文件（为空则只输出到控制台）
+log_file: ./sync.log
+
+# ------------------------------------------------------------
+# 同步策略
+# ------------------------------------------------------------
+sync:
+  # 守护进程(daemon)轮询间隔（分钟）。Canvas 不支持向学生推送文件变更，
+  # "实时同步"通过定期轮询 + 增量比对实现。建议 15~60 分钟。
+  interval_minutes: 30
+
+  # 仅同步收藏的课程（eLearning 中点亮的星标课程）
+  only_favorites: false
+
+  # 选课角色过滤：student | teacher | ta | observer | designer
+  enrollment_type: student
+
+  # 课程 ID 白名单 / 黑名单（可留空）
+  include_courses: []
+  exclude_courses: []
+
+  # 仅同步指定学期（名称模糊匹配，如 ["2025春季", "2024-2025-2"]）。留空 = 全部
+  include_terms: []
+
+  # 下载行为
+  download:
+    concurrency: 4            # 并发下载数（API 调用保持串行以规避限流，此处仅并发文件下载）
+    max_retries: 5            # 单文件最大重试次数
+    max_file_size_mb: 0       # 单文件大小上限，0 = 不限制
+    min_free_space_gb: 1      # 磁盘剩余空间低于此值时停止同步
+    exclude_extensions: []    # 跳过的扩展名，如 [".exe", ".dmg", ".iso"]
+
+  # 远端文件被删除时，是否同步删除本地对应文件（谨慎开启）
+  prune: false
+
+  # 将课程页面/作业/公告的正文导出为 HTML 归档（保存到 <课程>/_pages/ 目录）
+  # 确保那些只存在于页面上、没有独立文件的内容也能本地化
+  archive_pages: true

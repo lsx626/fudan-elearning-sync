@@ -1,0 +1,79 @@
+package edu.fudan.elearning.sync.util
+
+import android.content.Context
+import android.content.Intent
+import androidx.core.content.FileProvider
+import edu.fudan.elearning.sync.data.FileItem
+import java.io.File
+
+/** 文件操作工具：打开预览、分享。 */
+object FileUtils {
+
+    fun fileUri(context: Context, path: String): android.net.Uri =
+        FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            File(path)
+        )
+
+    /** 用系统默认应用打开文件（PDF/Word/Excel/PPT/图片等）。 */
+    fun openFile(context: Context, file: FileItem) {
+        if (file.localPath.isEmpty()) return
+        try {
+            val uri = fileUri(context, file.localPath)
+            val mime = guessMime(file.filename)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mime)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** 分享文件（系统分享面板）。 */
+    fun shareFile(context: Context, file: FileItem) {
+        if (file.localPath.isEmpty()) return
+        try {
+            val uri = fileUri(context, file.localPath)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = guessMime(file.filename)
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "分享文件"))
+        } catch (_: Exception) {
+        }
+    }
+
+    /** 依据扩展名推断 MIME 类型。 */
+    fun guessMime(filename: String): String {
+        return when (filename.substringAfterLast('.', "").lowercase()) {
+            "pdf" -> "application/pdf"
+            "doc", "docx" -> "application/msword"
+            "xls", "xlsx" -> "application/vnd.ms-excel"
+            "ppt", "pptx" -> "application/vnd.ms-powerpoint"
+            "txt", "md" -> "text/plain"
+            "csv" -> "text/csv"
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "gif" -> "image/gif"
+            "mp4" -> "video/mp4"
+            "mp3" -> "audio/mpeg"
+            "zip" -> "application/zip"
+            "rar" -> "application/x-rar-compressed"
+            "7z" -> "application/x-7z-compressed"
+            else -> "*/*"
+        }
+    }
+
+    /** 格式化字节大小。 */
+    fun formatBytes(bytes: Long): String {
+        if (bytes < 1024) return "$bytes B"
+        val kb = bytes / 1024.0
+        if (kb < 1024) return "%.1f KB".format(kb)
+        val mb = kb / 1024.0
+        if (mb < 1024) return "%.1f MB".format(mb)
+        return "%.2f GB".format(mb / 1024.0)
+    }
+}
