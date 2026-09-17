@@ -36,11 +36,11 @@ data class CanvasFile(
 class CanvasApi(private val baseUrl: String = "https://elearning.fudan.edu.cn") {
     private val gson = Gson()
 
-    /** 获取当前用户的所有活跃课程（含学期）。 */
+    /** 获取当前用户的所有可见课程（含学期）。 */
     suspend fun getCourses(): List<CanvasCourse> = withContext(Dispatchers.IO) {
         try {
             val resp = ApiClient.get(
-                "$baseUrl/api/v1/courses?enrollment_state=active&per_page=100&include[]=term"
+                "$baseUrl/api/v1/courses?per_page=100&include[]=term&state[]=available&enrollment_type=student"
             )
             resp.use {
                 val body = it.body?.string() ?: "[]"
