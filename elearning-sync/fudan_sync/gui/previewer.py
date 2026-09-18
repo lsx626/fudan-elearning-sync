@@ -1,511 +1,1728 @@
 # -*- coding: utf-8 -*-
-"""文档预览对话框：纯本地渲染，支持 PDF / 图片 / 文本 / Office 文档。
+"""In-app preview widgets for downloaded course material.
 
-根据文件扩展名自动选择预览方式，Office 文档优先尝试 pywin32 转 PDF，
-不可用时展示文件信息卡片并提供"用默认应用打开"按钮。
+The previewer keeps heavyweight integrations optional.  QtPdf is used for
+PDFs when available, QtMultimedia powers local audio/video playback, and
+modern Office files are parsed directly from their ZIP/XML representation
+before falling back to native Office/LibreOffice conversion.
 """
 from __future__ import annotations
 
+import codecs
+import csv
+import mimetypes
 import os
+import re
 import shutil
+import subprocess
 import tempfile
-from typing import Optional
+import threading
+import zipfile
+from datetime import date, datetime, time
+from itertools import islice
+from pathlib import Path
+from time import monotonic
+from typing import Optional, Sequence
+from xml.etree import ElementTree as ET
 
-from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QGuiApplication, QPixmap
-from PySide6.QtWidgets import (QDialog, QFileDialog, QFrame, QHBoxLayout,
-                               QLabel, QMessageBox, QPlainTextEdit,
-                               QPushButton, QScrollArea, QSizePolicy,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import QObject, QUrl, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QGuiApplication, QMovie, QPixmap
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSlider,
+    QStyle,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextBrowser,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..utils import format_size
 from .icon import app_icon
-from .styles import ACCENT, BG, BORDER, CARD, TEXT, TEXT_SECONDARY
+from .sharing import show_share_menu
+from .styles import ACCENT, BORDER, CARD, TEXT, TEXT_SECONDARY
 
 # ---------------------------------------------------------------------------
-# 文件类型分类
+# File type classification
 # ---------------------------------------------------------------------------
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico",
-              ".svg", ".tif", ".tiff"}
-TEXT_EXTS = {".txt", ".md", ".rst", ".log", ".csv", ".json", ".xml",
-             ".html", ".htm", ".css", ".js", ".py", ".java", ".c", ".cpp",
-             ".h", ".hpp", ".cs", ".go", ".rs", ".ts", ".tsx", ".jsx",
-             ".sh", ".bat", ".ps1", ".yaml", ".yml", ".toml", ".ini",
-             ".conf", ".cfg", ".sql", ".r", ".m", ".php", ".rb", ".swift",
-             ".kt", ".dart", ".vue", ".scss", ".less"}
+IMAGE_EXTS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg",
+    ".tif", ".tiff", ".avif", ".heic", ".heif",
+}
+TEXT_EXTS = {
+    ".txt", ".md", ".rst", ".log", ".csv", ".tsv", ".json", ".xml",
+    ".html", ".htm", ".css", ".js", ".py", ".java", ".c", ".cpp",
+    ".h", ".hpp", ".cs", ".go", ".rs", ".ts", ".tsx", ".jsx",
+    ".sh", ".bat", ".cmd", ".ps1", ".yaml", ".yml", ".toml", ".ini",
+    ".conf", ".cfg", ".sql", ".r", ".m", ".php", ".rb", ".swift",
+    ".kt", ".dart", ".vue", ".scss", ".less", ".tex", ".properties",
+}
 PDF_EXTS = {".pdf"}
-WORD_EXTS = {".doc", ".docx", ".rtf", ".odt"}
-EXCEL_EXTS = {".xls", ".xlsx", ".csv", ".ods"}
-PPT_EXTS = {".ppt", ".pptx", ".odp"}
+WORD_EXTS = {".doc", ".docx", ".docm", ".rtf", ".odt", ".ott"}
+EXCEL_EXTS = {".xls", ".xlsx", ".xlsm", ".xlt", ".xltx", ".ods", ".ots"}
+PPT_EXTS = {".ppt", ".pptx", ".pptm", ".pps", ".ppsx", ".odp", ".otp"}
+AUDIO_EXTS = {
+    ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".oga", ".opus",
+    ".wma", ".aiff", ".aif", ".mid", ".midi", ".amr", ".ape",
+}
+VIDEO_EXTS = {
+    ".mp4", ".m4v", ".mkv", ".avi", ".mov", ".webm", ".wmv", ".mpeg",
+    ".mpg", ".mpe", ".3gp", ".3g2", ".ts", ".mts", ".m2ts", ".flv",
+}
 OFFICE_EXTS = WORD_EXTS | EXCEL_EXTS | PPT_EXTS
 
 
 def _detect_type(file_path: str) -> str:
-    """根据扩展名判断文件类型，返回 'pdf' | 'image' | 'text' | 'office' | 'unknown'。"""
-    ext = os.path.splitext(file_path)[1].lower()
+    """Return a stable preview kind for *file_path*.
+
+    ``office`` is retained for every Office variant for backwards
+    compatibility. CSV remains ``text`` and receives a table renderer.
+    """
+    ext = os.path.splitext(str(file_path))[1].lower()
+    if ext == ".ts":
+        # .ts is shared by TypeScript and MPEG transport streams. MPEG-TS
+        # packets start with a 0x47 sync byte every 188 bytes, so content
+        # sniffing cleanly distinguishes real course videos from source code.
+        try:
+            with open(file_path, "rb") as stream:
+                header = stream.read(377)
+            if len(header) >= 189 and header[0] == 0x47 and header[188] == 0x47:
+                return "video"
+        except OSError:
+            pass
+        return "text"
     if ext in PDF_EXTS:
         return "pdf"
     if ext in IMAGE_EXTS:
         return "image"
+    if ext in AUDIO_EXTS:
+        return "audio"
+    if ext in VIDEO_EXTS:
+        return "video"
     if ext in TEXT_EXTS:
         return "text"
     if ext in OFFICE_EXTS:
         return "office"
+    guessed, _ = mimetypes.guess_type(str(file_path))
+    if guessed:
+        if guessed == "application/pdf":
+            return "pdf"
+        if guessed.startswith("image/"):
+            return "image"
+        if guessed.startswith("audio/"):
+            return "audio"
+        if guessed.startswith("video/"):
+            return "video"
+        if guessed.startswith("text/"):
+            return "text"
+    # Content sniffing is intentionally conservative and only runs for files
+    # that did not have a recognized extension.  This covers Canvas downloads
+    # whose names occasionally lose their suffix during synchronization.
+    try:
+        with open(file_path, "rb") as stream:
+            header = stream.read(4096)
+        if header.startswith(b"%PDF-"):
+            return "pdf"
+        if header.startswith((b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"BM")):
+            return "image"
+        if header.startswith(b"PK\x03\x04"):
+            with zipfile.ZipFile(file_path) as archive:
+                names = set(archive.namelist())
+                if "word/document.xml" in names:
+                    return "office"
+                if "xl/workbook.xml" in names:
+                    return "office"
+                if any(name.startswith("ppt/slides/") for name in names):
+                    return "office"
+        if header.startswith((b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")):
+            return "audio"
+        if len(header) >= 12 and header[4:8] == b"ftyp":
+            brand = header[8:12]
+            return "audio" if brand in {b"M4A ", b"M4B ", b"M4P "} else "video"
+        if header.startswith(b"RIFF") and header[8:12] == b"WAVE":
+            return "audio"
+        if header.startswith(b"RIFF") and header[8:12] == b"AVI ":
+            return "video"
+    except (OSError, zipfile.BadZipFile):
+        pass
     return "unknown"
 
 
-class DocumentPreviewDialog(QDialog):
-    """文档预览对话框。
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
 
-    接收文件路径，自动判断类型并选择合适的预览方式。
-    提供"在默认应用打开"和"分享（复制到指定路径）"功能。
+
+def _xml_text(element: ET.Element) -> str:
+    """Join visible text nodes in an OOXML/ODF element."""
+    return "".join(
+        (node.text or "")
+        for node in element.iter()
+        if _local_name(node.tag) in {"t", "text", "tab"}
+    )
+
+
+def _zip_xml(path: str, member: str) -> Optional[ET.Element]:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            with archive.open(member) as stream:
+                return ET.fromstring(stream.read())
+    except (KeyError, OSError, ET.ParseError, zipfile.BadZipFile):
+        return None
+
+
+def _extract_docx_blocks(path: str) -> list[str]:
+    """Extract paragraphs/table rows from DOCX or ODT packages."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in {".odt", ".ott"}:
+        try:
+            from odf import teletype  # type: ignore
+            from odf.opendocument import load  # type: ignore
+            from odf.table import Table, TableCell, TableRow  # type: ignore
+            from odf.text import P  # type: ignore
+
+            document = load(path)
+            blocks = []
+            # ODF paragraphs provide the closest readable representation;
+            # append tab-separated table rows so column relationships remain
+            # visible even when styles are not rendered.
+            for paragraph in document.text.getElementsByType(P):
+                value = teletype.extractText(paragraph).strip()
+                if value:
+                    blocks.append(value)
+            for table in document.text.getElementsByType(Table):
+                for row in table.getElementsByType(TableRow):
+                    values = [
+                        teletype.extractText(cell).strip()
+                        for cell in row.getElementsByType(TableCell)
+                    ]
+                    if any(values):
+                        blocks.append("\t".join(values))
+            if blocks:
+                return blocks
+        except Exception:  # pylint: disable=broad-except
+            # Optional parsers may reject damaged/partially downloaded
+            # packages with library-specific exception types. Continue to the
+            # lightweight ZIP/XML reader in that case.
+            pass
+    elif ext in {".docx", ".docm"}:
+        try:
+            from docx import Document  # type: ignore
+
+            document = Document(path)
+            blocks = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+            for table in document.tables:
+                for row in table.rows:
+                    values = [cell.text.strip() for cell in row.cells]
+                    if any(values):
+                        blocks.append("\t".join(values))
+            if blocks:
+                return blocks
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    root = _zip_xml(path, "word/document.xml")
+    if root is None:
+        root = _zip_xml(path, "content.xml")
+    if root is None:
+        return []
+    blocks: list[str] = []
+    for node in root.iter():
+        kind = _local_name(node.tag)
+        if kind == "p":
+            value = _xml_text(node).strip()
+            if value:
+                blocks.append(value)
+        elif kind == "tr":
+            cells = []
+            for cell in node.iter():
+                if _local_name(cell.tag) in {"tc", "table-cell"}:
+                    text = _xml_text(cell).strip()
+                    if text:
+                        cells.append(text)
+            if cells:
+                blocks.append("\t".join(cells))
+    if not blocks:
+        value = " ".join(part.strip() for part in root.itertext() if part.strip())
+        if value:
+            blocks.append(value)
+    return blocks
+
+
+def _format_office_value(value) -> str:
+    """Convert a spreadsheet value without losing dates or formulas."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, (date, time)):
+        return value.isoformat()
+    return str(value)
+
+
+def _extract_xlsx_rows(
+    path: str, max_rows: int = 500, max_cols: int = 40
+) -> list[tuple[str, list[str]]]:
+    """Extract sheet rows from XLSX/ODS without requiring Excel."""
+    rows: list[tuple[str, list[str]]] = []
+    ext = os.path.splitext(path)[1].lower()
+    if ext in {".ods", ".ots"}:
+        try:
+            from odf import teletype  # type: ignore
+            from odf.opendocument import load  # type: ignore
+            from odf.table import Table, TableCell, TableRow  # type: ignore
+
+            document = load(path)
+            for table in document.spreadsheet.getElementsByType(Table):
+                sheet_name = table.getAttribute("name") or "工作表"
+                for row in table.getElementsByType(TableRow)[:max_rows]:
+                    values: list[str] = []
+                    for cell in row.getElementsByType(TableCell):
+                        repeat = int(cell.getAttribute("numbercolumnsrepeated") or 1)
+                        value = teletype.extractText(cell).strip()
+                        values.extend([value] * min(repeat, max_cols - len(values)))
+                        if len(values) >= max_cols:
+                            break
+                    if values:
+                        rows.append((sheet_name, values[:max_cols]))
+            if rows:
+                return rows
+        except Exception:  # pylint: disable=broad-except
+            pass
+        root = _zip_xml(path, "content.xml")
+        if root is None:
+            return rows
+        for table in (node for node in root.iter() if _local_name(node.tag) == "table"):
+            sheet_name = str(next((v for k, v in table.attrib.items() if _local_name(k) == "name"), "工作表"))
+            count = 0
+            for row in (node for node in table if _local_name(node.tag) == "table-row"):
+                values = []
+                for cell in (node for node in row if _local_name(node.tag) == "table-cell"):
+                    text = " ".join(part.strip() for part in cell.itertext() if part.strip())
+                    values.append(text)
+                if values:
+                    rows.append((sheet_name, values[:max_cols]))
+                    count += 1
+                if count >= max_rows:
+                    break
+        return rows
+
+    try:
+        from openpyxl import load_workbook  # type: ignore
+
+        workbook = load_workbook(path, read_only=True, data_only=False, keep_links=False)
+        try:
+            for sheet in workbook.worksheets:
+                max_column = min(max(sheet.max_column or 1, 1), max_cols)
+                max_row = min(max(sheet.max_row or 1, 1), max_rows)
+                for cells in sheet.iter_rows(min_row=1, max_row=max_row, max_col=max_column):
+                    # Keep internal and trailing empty cells up to the used
+                    # range. Formula values remain formula strings because
+                    # data_only=False, while dates retain their ISO meaning.
+                    values = [_format_office_value(cell.value) for cell in cells]
+                    if any(values):
+                        rows.append((sheet.title, values))
+        finally:
+            workbook.close()
+        if rows:
+            return rows
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            shared: list[str] = []
+            if "xl/sharedStrings.xml" in archive.namelist():
+                root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+                shared = [_xml_text(item) for item in root if _local_name(item.tag) == "si"]
+            workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+            rels: dict[str, str] = {}
+            if "xl/_rels/workbook.xml.rels" in archive.namelist():
+                relroot = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+                for rel in relroot:
+                    rid = rel.attrib.get("Id")
+                    target = rel.attrib.get("Target", "")
+                    if rid:
+                        rels[rid] = target.lstrip("/")
+            sheets = [node for node in workbook.iter() if _local_name(node.tag) == "sheet"]
+            for index, sheet in enumerate(sheets):
+                name = sheet.attrib.get("name", f"工作表 {index + 1}")
+                rid = next((value for key, value in sheet.attrib.items() if _local_name(key) == "id"), None)
+                target = rels.get(rid or "", f"xl/worksheets/sheet{index + 1}.xml")
+                if not target.startswith("xl/"):
+                    target = "xl/" + target
+                if target not in archive.namelist():
+                    continue
+                sheet_root = ET.fromstring(archive.read(target))
+                count = 0
+                for row in (node for node in sheet_root.iter() if _local_name(node.tag) == "row"):
+                    values = []
+                    for cell in (node for node in row if _local_name(node.tag) == "c"):
+                        kind = cell.attrib.get("t", "")
+                        value_node = next((child for child in cell if _local_name(child.tag) == "v"), None)
+                        inline = next((child for child in cell if _local_name(child.tag) == "is"), None)
+                        value = _xml_text(inline) if inline is not None else (value_node.text if value_node is not None else "")
+                        if kind == "s":
+                            try:
+                                value = shared[int(value or 0)]
+                            except (ValueError, IndexError):
+                                pass
+                        values.append(value or "")
+                    if values:
+                        rows.append((name, values[:max_cols]))
+                        count += 1
+                    if count >= max_rows:
+                        break
+    except (KeyError, OSError, ET.ParseError, zipfile.BadZipFile):
+        return rows
+    return rows
+
+
+def _extract_pptx_slides(path: str, max_slides: int = 100) -> list[str]:
+    """Extract visible text from PPTX/ODP slides."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in {".odp", ".otp"}:
+        try:
+            from odf import teletype  # type: ignore
+            from odf.draw import Page  # type: ignore
+            from odf.opendocument import load  # type: ignore
+            from odf.text import P  # type: ignore
+
+            document = load(path)
+            result = []
+            for slide in document.presentation.getElementsByType(Page)[:max_slides]:
+                lines = [
+                    teletype.extractText(paragraph).strip()
+                    for paragraph in slide.getElementsByType(P)
+                ]
+                text = "\n".join(line for line in lines if line)
+                if text:
+                    result.append(text)
+            if result:
+                return result
+        except Exception:  # pylint: disable=broad-except
+            pass
+    else:
+        try:
+            from pptx import Presentation  # type: ignore
+
+            presentation = Presentation(path)
+            result = []
+            for slide in list(presentation.slides)[:max_slides]:
+                lines = []
+                for shape in slide.shapes:
+                    if getattr(shape, "has_text_frame", False):
+                        text = "\n".join(
+                            paragraph.text.strip()
+                            for paragraph in shape.text_frame.paragraphs
+                            if paragraph.text.strip()
+                        )
+                        if text:
+                            lines.append(text)
+                    if getattr(shape, "has_table", False):
+                        for row in shape.table.rows:
+                            values = [cell.text.strip() for cell in row.cells]
+                            if any(values):
+                                lines.append("\t".join(values))
+                if lines:
+                    result.append("\n".join(lines))
+            if result:
+                return result
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            if ext in {".odp", ".otp"}:
+                root = ET.fromstring(archive.read("content.xml"))
+                result = []
+                for slide in [node for node in root.iter() if _local_name(node.tag) == "page"][:max_slides]:
+                    text = " ".join(part.strip() for part in slide.itertext() if part.strip())
+                    if text:
+                        result.append(text)
+                return result
+            names = sorted(
+                (name for name in archive.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)),
+                key=lambda value: int(re.search(r"(\d+)", value).group(1)),
+            )
+            result = []
+            for name in names[:max_slides]:
+                root = ET.fromstring(archive.read(name))
+                text = " ".join(part.strip() for part in root.itertext() if part.strip())
+                if text:
+                    result.append(text)
+            return result
+    except (KeyError, OSError, ET.ParseError, zipfile.BadZipFile):
+        return []
+
+
+def _format_time(milliseconds: int) -> str:
+    seconds = max(0, int(milliseconds // 1000))
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+
+_RTF_DESTINATIONS = frozenset({
+    "annotation", "atnauthor", "atndate", "background", "blipuid",
+    "bkmkend", "bkmkstart", "colortbl", "colorschememapping", "datafield",
+    "datastore", "defchp", "defpap", "do", "doccomm", "docvar",
+    "dptxbxtext", "factoidname", "falt", "fchars", "fldinst", "fontemb",
+    "fontfile", "fonttbl", "footer", "footerf", "footerl", "footerr",
+    "footnote", "formfield", "ftncn", "ftnsep", "ftnsepc", "generator",
+    "header", "headerf", "headerl", "headerr", "hl", "hlfr", "hlinkbase",
+    "info", "keycode", "latentstyles", "list", "listlevel", "listname",
+    "listoverride", "listoverridetable", "listpicture", "listtable",
+    "mmathpr", "nextfile", "nonesttables", "objalias", "objclass",
+    "objdata", "object", "objname", "objsect", "pict", "pn", "pnseclvl",
+    "private", "propname", "protend", "protstart", "protusertbl", "revtbl",
+    "rsidtbl", "shp", "shpinst", "shprslt", "sn", "sp", "staticval",
+    "stylesheet", "template", "themedata", "ud", "userprops", "xmlattrname",
+    "xmlattrvalue", "xmlclose", "xmlname", "xmlnstbl", "xmlopen",
+})
+
+_RTF_CONTROL_TEXT = {
+    "bullet": "\u2022",
+    "cell": "\t",
+    "emdash": "\u2014",
+    "emspace": "\u2003",
+    "endash": "\u2013",
+    "enspace": "\u2002",
+    "ldblquote": "\u201c",
+    "line": "\n",
+    "lquote": "\u2018",
+    "page": "\n\n",
+    "par": "\n",
+    "qmspace": "\u2005",
+    "rdblquote": "\u201d",
+    "rquote": "\u2019",
+    "row": "\n",
+    "tab": "\t",
+}
+
+
+def _rtf_codepage(number: int) -> str:
+    """Return a Python codec for an RTF ``\\ansicpg`` value."""
+    aliases = {
+        0: "cp1252",
+        10000: "mac_roman",
+        65001: "utf-8",
+    }
+    codec = aliases.get(number, f"cp{number}")
+    try:
+        codecs.lookup(codec)
+    except LookupError:
+        return "cp1252"
+    return codec
+
+
+def _decode_rtf_text(content: str) -> str:
+    """Decode the visible text in an RTF stream without requiring Word.
+
+    The parser intentionally ignores formatting, embedded objects and metadata,
+    but preserves the RTF features needed by ordinary documents: ANSI code
+    pages, hexadecimal bytes, Unicode escapes and their fallback characters.
+    Reading the source with Latin-1 keeps every original byte reversible.
     """
+    states = [{"codepage": "cp1252", "uc_skip": 1, "ignored": False}]
+    parts: list[str] = []
+    encoded = bytearray()
+    fallback_remaining = 0
+
+    def state() -> dict[str, object]:
+        return states[-1]
+
+    def flush_encoded() -> None:
+        if not encoded:
+            return
+        codec = str(state()["codepage"])
+        parts.append(bytes(encoded).decode(codec, errors="replace"))
+        encoded.clear()
+
+    def consume_fallback() -> bool:
+        nonlocal fallback_remaining
+        if fallback_remaining <= 0:
+            return False
+        fallback_remaining -= 1
+        return True
+
+    def append_byte(value: int) -> None:
+        if consume_fallback() or bool(state()["ignored"]):
+            return
+        encoded.append(value & 0xFF)
+
+    def append_text(value: str, *, fallback_character: bool = False) -> None:
+        if fallback_character and consume_fallback():
+            return
+        flush_encoded()
+        if not bool(state()["ignored"]):
+            parts.append(value)
+
+    index = 0
+    length = len(content)
+    while index < length:
+        character = content[index]
+        if character == "{":
+            flush_encoded()
+            states.append(dict(state()))
+            index += 1
+            continue
+        if character == "}":
+            flush_encoded()
+            if len(states) > 1:
+                states.pop()
+            index += 1
+            continue
+        if character != "\\":
+            index += 1
+            if character in "\r\n":
+                continue
+            value = ord(character)
+            if value <= 0xFF:
+                append_byte(value)
+            else:
+                append_text(character, fallback_character=True)
+            continue
+
+        index += 1
+        if index >= length:
+            break
+        control = content[index]
+
+        if control in "\\{}":
+            append_text(control, fallback_character=True)
+            index += 1
+            continue
+        if control == "'":
+            digits = content[index + 1:index + 3]
+            if len(digits) == 2 and all(value in "0123456789abcdefABCDEF" for value in digits):
+                append_byte(int(digits, 16))
+                index += 3
+            else:
+                index += 1
+            continue
+        if control == "*":
+            flush_encoded()
+            state()["ignored"] = True
+            index += 1
+            continue
+        if control == "~":
+            append_text("\u00a0", fallback_character=True)
+            index += 1
+            continue
+        if control == "_":
+            append_text("\u2011", fallback_character=True)
+            index += 1
+            continue
+        if control == "-":
+            append_text("\u00ad", fallback_character=True)
+            index += 1
+            continue
+        if control in "\r\n":
+            if control == "\r" and index + 1 < length and content[index + 1] == "\n":
+                index += 1
+            index += 1
+            continue
+        if not control.isalpha():
+            index += 1
+            continue
+
+        word_start = index
+        while index < length and content[index].isalpha():
+            index += 1
+        word = content[word_start:index].lower()
+        sign = 1
+        if index < length and content[index] == "-":
+            sign = -1
+            index += 1
+        number_start = index
+        while index < length and content[index].isdigit():
+            index += 1
+        parameter = None
+        if index > number_start:
+            parameter = sign * int(content[number_start:index])
+        if index < length and content[index] == " ":
+            index += 1
+
+        if word == "bin" and parameter is not None:
+            flush_encoded()
+            index = min(length, index + max(0, parameter))
+            continue
+        if word in _RTF_DESTINATIONS:
+            flush_encoded()
+            state()["ignored"] = True
+            continue
+        if word == "ansicpg" and parameter is not None:
+            flush_encoded()
+            state()["codepage"] = _rtf_codepage(parameter)
+            continue
+        if word == "uc" and parameter is not None:
+            state()["uc_skip"] = max(0, parameter)
+            continue
+        if word == "u" and parameter is not None:
+            flush_encoded()
+            code_unit = parameter & 0xFFFF
+            if not bool(state()["ignored"]):
+                parts.append(chr(code_unit))
+            fallback_remaining = int(state()["uc_skip"])
+            continue
+        if word in _RTF_CONTROL_TEXT:
+            append_text(_RTF_CONTROL_TEXT[word])
+
+    flush_encoded()
+    text = "".join(parts)
+    # RTF stores non-BMP characters as UTF-16 surrogate pairs in consecutive
+    # \u controls. Resolve valid pairs and replace isolated surrogates.
+    text = text.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le", errors="replace")
+    return text.replace("\x00", "").strip()
+
+
+class _OfficeRenderSignals(QObject):
+    """Marshal a native Office conversion result back to the GUI thread."""
+
+    finished = Signal(str, str)
+
+
+class _ImagePreviewWidget(QWidget):
+    """Resize-aware image canvas used inside the dialog's scroll area."""
+
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self._pixmap = QPixmap(path)
+        self._movie: Optional[QMovie] = None
+        self._label = QLabel()
+        self._label.setAlignment(Qt.AlignCenter)
+        self._label.setStyleSheet(f"background: {CARD}; padding: 12px;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._label)
+        if os.path.splitext(path)[1].lower() == ".gif":
+            movie = QMovie(path)
+            if movie.isValid():
+                self._movie = movie
+                self._label.setMovie(movie)
+                movie.start()
+        self.setStyleSheet(f"background: {CARD};")
+        self._refresh()
+
+    @property
+    def is_valid(self) -> bool:
+        return self._movie is not None or not self._pixmap.isNull()
+
+    def _refresh(self) -> None:
+        available = self.size() - QSize(28, 28)
+        if available.width() < 32 or available.height() < 32:
+            available = QSize(max(32, self._pixmap.width()), max(32, self._pixmap.height()))
+        if self._movie is not None:
+            original = self._pixmap.size()
+            self._movie.setScaledSize(
+                original.scaled(available, Qt.KeepAspectRatio)
+                if not original.isEmpty() else available
+            )
+            return
+        if self._pixmap.isNull():
+            return
+        scaled = self._pixmap.scaled(available, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._label.setPixmap(scaled)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self._movie is not None:
+            self._movie.stop()
+        super().closeEvent(event)
+
+
+class DocumentPreviewDialog(QDialog):
+    """Preview a local file without leaving the application."""
 
     def __init__(self, file_path: str, parent=None):
         super().__init__(parent)
+        # Preview dialogs are opened repeatedly from the file table.  Without
+        # delete-on-close, every accepted/closed dialog remains a hidden child
+        # of MainWindow and retains its document/media widget tree until the
+        # entire application exits.
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._original_file_path = os.path.abspath(file_path)
         self.file_path = self._original_file_path
         self._file_type = _detect_type(self.file_path)
-        self._temp_pdf_path: Optional[str] = None  # Office 转 PDF 的临时文件
-
+        self._temp_pdf_path: Optional[str] = None
+        self._temp_pdf_dir: Optional[str] = None
+        self._pdf_document = None
+        self._pdf_view = None
+        self.media_player = None
+        self.audio_output = None
+        self.video_widget = None
+        self.position_slider: Optional[QSlider] = None
+        self.volume_slider: Optional[QSlider] = None
+        self.play_button: Optional[QToolButton] = None
+        self.loop_checkbox: Optional[QCheckBox] = None
+        self.time_label: Optional[QLabel] = None
+        self.media_message_label: Optional[QLabel] = None
+        self._image_widget: Optional[_ImagePreviewWidget] = None
+        self._cleaned_up = False
+        self._resource_lock = threading.Lock()
+        self._pending_office_dirs: set[str] = set()
+        self._office_cancel_event = threading.Event()
+        self._office_render_started = False
+        self._office_signals = _OfficeRenderSignals(self)
+        self._office_signals.finished.connect(self._on_office_rendered)
+        self._office_thread: Optional[threading.Thread] = None
         self.setWindowTitle(f"预览 · {os.path.basename(self.file_path)}")
         self.setWindowIcon(app_icon())
         self.setObjectName("root")
         self.setMinimumSize(720, 560)
-        self.resize(820, 640)
-
+        self.resize(900, 680)
         self._build_ui()
         self._center()
-        # 延迟加载预览内容，让窗口先显示出来
+        application = QGuiApplication.instance()
+        if application is not None:
+            application.aboutToQuit.connect(self._cleanup_resources)
         QTimer.singleShot(50, self._load_preview)
 
-    # ------------------------------------------------------------------
-    # UI 构建
-    # ------------------------------------------------------------------
     def _center(self) -> None:
-        """窗口居中显示。"""
-        screen = QGuiApplication.primaryScreen().availableGeometry()
-        self.move(screen.center().x() - self.width() // 2,
-                  screen.center().y() - self.height() // 2)
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        geometry = screen.availableGeometry()
+        self.move(geometry.center().x() - self.width() // 2, geometry.center().y() - self.height() // 2)
 
     def _build_ui(self) -> None:
-        """构建界面布局。"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(12)
-
-        # ---- 顶部：文件信息栏 ----
-        info_bar = self._build_info_bar()
-        layout.addWidget(info_bar)
-
-        # ---- 中部：预览区域 ----
+        layout.addWidget(self._build_info_bar())
         self.preview_area = QScrollArea()
         self.preview_area.setWidgetResizable(True)
         self.preview_area.setFrameShape(QFrame.NoFrame)
-        self.preview_area.setStyleSheet(f"""
-            QScrollArea {{
-                background: {CARD};
-                border: 1px solid {BORDER};
-                border-radius: 12px;
-            }}
-        """)
-
-        # 占位：加载提示
+        self.preview_area.setStyleSheet(
+            f"QScrollArea {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px; }}"
+        )
         self._preview_placeholder = QLabel("正在加载预览…")
         self._preview_placeholder.setAlignment(Qt.AlignCenter)
         self._preview_placeholder.setStyleSheet(f"color: {TEXT_SECONDARY}; padding: 40px;")
         self.preview_area.setWidget(self._preview_placeholder)
-
         layout.addWidget(self.preview_area, 1)
-
-        # ---- 底部：操作按钮 ----
         button_row = QHBoxLayout()
         button_row.setSpacing(8)
-
         self.share_btn = QPushButton("分享…")
+        self.share_btn.setToolTip("复制文件到其他位置")
         self.share_btn.setCursor(Qt.PointingHandCursor)
         self.share_btn.clicked.connect(self._on_share)
-
         self.open_default_btn = QPushButton("在默认应用打开")
         self.open_default_btn.setCursor(Qt.PointingHandCursor)
         self.open_default_btn.clicked.connect(self._on_open_default)
-
         self.close_btn = QPushButton("关闭")
         self.close_btn.setObjectName("primary")
         self.close_btn.setCursor(Qt.PointingHandCursor)
         self.close_btn.clicked.connect(self.accept)
-
         button_row.addWidget(self.share_btn)
         button_row.addStretch()
         button_row.addWidget(self.open_default_btn)
         button_row.addWidget(self.close_btn)
-
         layout.addLayout(button_row)
 
     def _build_info_bar(self) -> QFrame:
-        """构建顶部文件信息卡片。"""
         card = QFrame()
         card.setObjectName("card")
         card.setMinimumHeight(72)
-
         card_layout = QHBoxLayout(card)
         card_layout.setContentsMargins(16, 12, 16, 12)
-        card_layout.setSpacing(14)
-
-        # 文件名 + 路径
         info_layout = QVBoxLayout()
         info_layout.setSpacing(2)
-
         name_label = QLabel(os.path.basename(self.file_path))
         name_label.setStyleSheet("font-size: 14px; font-weight: 600;")
         name_label.setWordWrap(True)
-
-        # 文件大小
         try:
             size_str = format_size(os.path.getsize(self.file_path))
         except OSError:
             size_str = "未知大小"
-
-        type_label = QLabel(f"{self._type_label()}  ·  {size_str}  ·  "
-                            f"{os.path.dirname(self.file_path)}")
+        type_label = QLabel(f"{self._type_label()}  ·  {size_str}  ·  {os.path.dirname(self.file_path)}")
         type_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px;")
         type_label.setWordWrap(True)
-
         info_layout.addWidget(name_label)
         info_layout.addWidget(type_label)
-
         card_layout.addLayout(info_layout, 1)
-
         return card
 
     def _type_label(self) -> str:
-        """返回文件类型的中文描述。"""
-        mapping = {
-            "pdf": "PDF 文档",
-            "image": "图片",
-            "text": "文本文件",
-            "office": "Office 文档",
+        return {
+            "pdf": "PDF 文档", "image": "图片", "text": "文本文件",
+            "office": "Office 文档", "audio": "音频", "video": "视频",
             "unknown": "文件",
-        }
-        return mapping.get(self._file_type, "文件")
+        }.get(self._file_type, "文件")
 
-    # ------------------------------------------------------------------
-    # 预览加载
-    # ------------------------------------------------------------------
     def _load_preview(self) -> None:
-        """根据文件类型加载对应预览。"""
+        if self._cleaned_up:
+            return
         if not os.path.exists(self.file_path):
             self._show_error("文件不存在")
             return
-
         try:
-            if self._file_type == "pdf":
-                self._load_pdf_preview()
-            elif self._file_type == "image":
-                self._load_image_preview()
-            elif self._file_type == "text":
-                self._load_text_preview()
-            elif self._file_type == "office":
-                self._load_office_preview()
-            else:
-                self._load_unknown_preview()
+            loaders = {
+                "pdf": self._load_pdf_preview,
+                "image": self._load_image_preview,
+                "text": self._load_text_preview,
+                "office": self._load_office_preview,
+                "audio": lambda: self._load_media_preview(False),
+                "video": lambda: self._load_media_preview(True),
+            }
+            loaders.get(self._file_type, self._load_unknown_preview)()
         except Exception as exc:  # pylint: disable=broad-except
             self._show_error(f"预览加载失败：{exc}")
 
     def _set_preview_widget(self, widget: QWidget) -> None:
-        """替换预览区的内容控件。"""
-        old_widget = self.preview_area.widget()
+        # QScrollArea owns its current widget and destroys it when setWidget()
+        # installs a replacement. Calling deleteLater() on that stale wrapper
+        # raises RuntimeError in PySide during asynchronous Office -> PDF swaps.
         self.preview_area.setWidget(widget)
-        if old_widget is not None and old_widget is not self._preview_placeholder:
-            old_widget.deleteLater()
 
-    # -- PDF 预览 --
-    def _load_pdf_preview(self) -> None:
-        """加载 PDF 预览（使用 QPdfReader 渲染首页为图片）。"""
+    # -- PDF -----------------------------------------------------------
+    def _load_pdf_preview(self, path: Optional[str] = None) -> None:
+        path = path or self.file_path
         try:
             from PySide6.QtPdf import QPdfDocument
             from PySide6.QtPdfWidgets import QPdfView
-            # 优先使用 QPdfView（完整 PDF 查看器）
             pdf_view = QPdfView()
             pdf_doc = QPdfDocument(self)
-            pdf_doc.load(self.file_path)
+            status = pdf_doc.load(path)
+            if getattr(status, "name", "Ready") not in {"Ready", "None_", "Loading"}:
+                raise RuntimeError(f"PDF 加载状态：{status}")
             pdf_view.setDocument(pdf_doc)
             pdf_view.setPageMode(QPdfView.PageMode.MultiPage)
-            pdf_view.setZoomMode(QPdfView.FitToWidth)
+            pdf_view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+            self._pdf_document = pdf_doc
+            self._pdf_view = pdf_view
             self._set_preview_widget(pdf_view)
         except Exception:
-            # QtPdf 模块不可用或渲染失败，降级为首页渲染
-            self._load_pdf_fallback()
+            self._load_pdf_fallback(path)
 
-    def _load_pdf_fallback(self) -> None:
-        """PDF 预览降级方案：尝试用 QImageReader 或直接显示提示。"""
+    def _load_pdf_fallback(self, path: Optional[str] = None) -> None:
+        path = path or self.file_path
         try:
-            # 尝试通过 PyMuPDF (fitz) 渲染
             import fitz  # type: ignore
-            doc = fitz.open(self.file_path)
-            if doc.page_count > 0:
-                page = doc[0]
-                pix = page.get_pixmap(dpi=150)
-                img = QPixmap()
-                img.loadFromData(pix.tobytes("png"))
-                self._show_image_preview(img)
-                doc.close()
-                return
+            with fitz.open(path) as doc:
+                if doc.page_count:
+                    pix = doc[0].get_pixmap(dpi=150)
+                    image = QPixmap()
+                    if image.loadFromData(pix.tobytes("png")):
+                        self._show_image_preview(image)
+                        return
         except ImportError:
             pass
         except Exception:  # pylint: disable=broad-except
             pass
+        self._show_unsupported_card("PDF 预览组件不可用", "当前环境缺少 PDF 渲染组件，您可以使用系统默认应用打开此文件。")
 
-        # 最终降级：显示提示卡片
-        self._show_unsupported_card(
-            "PDF 预览组件不可用",
-            "当前环境缺少 PDF 渲染组件，您可以使用系统默认应用打开此文件。"
-        )
-
-    # -- 图片预览 --
+    # -- images -------------------------------------------------------
     def _load_image_preview(self) -> None:
-        """加载图片预览。"""
-        pixmap = QPixmap(self.file_path)
-        if pixmap.isNull():
+        widget = _ImagePreviewWidget(self.file_path)
+        if not widget.is_valid:
+            if self.file_path.lower().endswith(".svg"):
+                try:
+                    from PySide6.QtSvgWidgets import QSvgWidget
+                    svg = QSvgWidget(self.file_path)
+                    svg.setStyleSheet(f"background: {CARD};")
+                    self._set_preview_widget(svg)
+                    return
+                except (ImportError, OSError):
+                    pass
+            # Qt's image plugins vary between distributions (notably for
+            # HEIC/AVIF). Pillow is optional, but gives packaged builds a
+            # reliable second decoder for those formats.
+            try:
+                from PIL import Image  # type: ignore
+                extension = os.path.splitext(self.file_path)[1].lower()
+                if extension in {".heic", ".heif"}:
+                    from pillow_heif import register_heif_opener  # type: ignore
+                    register_heif_opener()
+                elif extension == ".avif":
+                    # Pillow only gained a built-in AVIF plugin in recent
+                    # releases.  The declared pillow-heif dependency keeps
+                    # AVIF preview working with the older supported Pillow
+                    # versions as well.
+                    try:
+                        from pillow_heif import register_avif_opener  # type: ignore
+                        register_avif_opener()
+                    except ImportError:
+                        from pillow_heif import register_heif_opener  # type: ignore
+                        register_heif_opener()
+                image = Image.open(self.file_path).convert("RGBA")
+                raw = image.tobytes("raw", "RGBA")
+                from PySide6.QtGui import QImage
+                qimage = QImage(raw, image.width, image.height, QImage.Format_RGBA8888).copy()
+                widget = _ImagePreviewWidget.__new__(_ImagePreviewWidget)
+                QWidget.__init__(widget)
+                widget.path = self.file_path
+                widget._pixmap = QPixmap.fromImage(qimage)
+                widget._movie = None
+                widget._label = QLabel()
+                widget._label.setAlignment(Qt.AlignCenter)
+                widget._label.setStyleSheet(f"background: {CARD}; padding: 12px;")
+                layout = QVBoxLayout(widget)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.addWidget(widget._label)
+                widget.setStyleSheet(f"background: {CARD};")
+                widget._refresh()
+            except Exception:  # pylint: disable=broad-except
+                pass
+        if not widget.is_valid:
             self._show_error("无法加载图片")
             return
-        self._show_image_preview(pixmap)
+        self._image_widget = widget
+        self._set_preview_widget(widget)
 
     def _show_image_preview(self, pixmap: QPixmap) -> None:
-        """在预览区显示图片（自适应缩放）。"""
-        label = QLabel()
-        label.setAlignment(Qt.AlignCenter)
-        label.setStyleSheet(f"background: {CARD}; padding: 10px;")
+        widget = _ImagePreviewWidget.__new__(_ImagePreviewWidget)
+        QWidget.__init__(widget)
+        widget.path = ""
+        widget._pixmap = pixmap
+        widget._movie = None
+        widget._label = QLabel()
+        widget._label.setAlignment(Qt.AlignCenter)
+        widget._label.setStyleSheet(f"background: {CARD}; padding: 12px;")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(widget._label)
+        widget.setStyleSheet(f"background: {CARD};")
+        widget._refresh()
+        self._image_widget = widget
+        self._set_preview_widget(widget)
 
-        # 按预览区大小缩放，保留比例
-        area_size = self.preview_area.size() - QSize(40, 40)
-        scaled = pixmap.scaled(
-            area_size,
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
-        label.setPixmap(scaled)
-        self._set_preview_widget(label)
-
-    # -- 文本预览 --
+    # -- text and tables ----------------------------------------------
     def _load_text_preview(self) -> None:
-        """加载文本/代码预览。"""
-        # 限制读取大小，避免大文件卡 UI
-        max_bytes = 2 * 1024 * 1024  # 2MB
+        if os.path.splitext(self.file_path)[1].lower() == ".rtf":
+            self._load_rtf_preview()
+            return
+        if os.path.splitext(self.file_path)[1].lower() in {".html", ".htm"}:
+            self._load_html_preview()
+            return
+        if os.path.splitext(self.file_path)[1].lower() in {".csv", ".tsv"} and self._load_csv_preview():
+            return
+        max_bytes = 2 * 1024 * 1024
         try:
             file_size = os.path.getsize(self.file_path)
-            truncated = file_size > max_bytes
-
-            with open(self.file_path, "r", encoding="utf-8", errors="replace") as f:
-                if truncated:
-                    content = f.read(max_bytes)
-                    content += f"\n\n… 文件过大，仅预览前 {format_size(max_bytes)} …"
-                else:
-                    content = f.read()
+            with open(self.file_path, "r", encoding="utf-8-sig", errors="replace") as stream:
+                content = stream.read(max_bytes)
+            if file_size > max_bytes:
+                content += f"\n\n… 文件过大，仅预览前 {format_size(max_bytes)} …"
         except Exception as exc:  # pylint: disable=broad-except
             self._show_error(f"读取文件失败：{exc}")
             return
-
         text_edit = QPlainTextEdit()
         text_edit.setReadOnly(True)
         text_edit.setPlainText(content)
-        text_edit.setStyleSheet(f"""
-            QPlainTextEdit {{
-                background: {CARD};
-                border: none;
-                font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI", monospace;
-                font-size: 12px;
-                padding: 12px;
-                color: {TEXT};
-            }}
-        """)
         text_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+        text_edit.setStyleSheet(
+            f"QPlainTextEdit {{ background: {CARD}; border: none; font-family: Consolas, monospace; "
+            f"font-size: 12px; padding: 12px; color: {TEXT}; }}"
+        )
         self._set_preview_widget(text_edit)
 
-    # -- Office 文档预览 --
-    def _load_office_preview(self) -> None:
-        """加载 Office 文档预览：优先 pywin32 转 PDF，否则展示信息卡片。"""
-        converted = self._convert_office_to_pdf()
-        if converted:
-            # 复用 PDF 预览逻辑
-            self._file_type = "pdf"
-            self._load_pdf_preview()
+    def _load_html_preview(self) -> None:
+        max_bytes = 4 * 1024 * 1024
+        try:
+            with open(self.file_path, "r", encoding="utf-8-sig", errors="replace") as stream:
+                content = stream.read(max_bytes)
+        except OSError as exc:
+            self._show_error(f"读取文件失败：{exc}")
             return
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(False)
+        browser.setOpenLinks(False)
+        browser.document().setBaseUrl(
+            QUrl.fromLocalFile(os.path.dirname(self.file_path) + os.sep)
+        )
+        browser.setHtml(content)
+        browser.setStyleSheet(f"QTextBrowser {{ background: {CARD}; border: none; padding: 12px; color: {TEXT}; }}")
+        self._set_preview_widget(browser)
 
-        # 无法转换，展示信息卡片
+    def _load_rtf_preview(self) -> None:
+        """Render the readable part of an RTF file without Word."""
+        try:
+            with open(self.file_path, "r", encoding="latin-1") as stream:
+                content = stream.read(2 * 1024 * 1024)
+        except OSError as exc:
+            self._show_error(f"读取文件失败：{exc}")
+            return
+        self._show_text_blocks([_decode_rtf_text(content)], title="文档内容")
+
+    def _load_csv_preview(self) -> bool:
+        delimiter = "\t" if self.file_path.lower().endswith(".tsv") else ","
+        try:
+            with open(self.file_path, "r", encoding="utf-8-sig", errors="replace", newline="") as stream:
+                values = list(islice(csv.reader(stream, delimiter=delimiter), 1000))
+        except (OSError, csv.Error):
+            return False
+        if not values:
+            return False
+        columns = min(max(len(row) for row in values), 40)
+        table = QTableWidget(len(values), columns)
+        table.setAlternatingRowColors(True)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        for row, values_row in enumerate(values):
+            for column, value in enumerate(values_row[:columns]):
+                table.setItem(row, column, QTableWidgetItem(value))
+        table.resizeColumnsToContents()
+        self._set_preview_widget(table)
+        return True
+
+    # -- Office -------------------------------------------------------
+    def _load_office_preview(self) -> None:
+        ext = os.path.splitext(self._original_file_path)[1].lower()
+        if self._office_renderer_available():
+            loading = QLabel("正在生成完整预览…")
+            loading.setAlignment(Qt.AlignCenter)
+            loading.setStyleSheet(f"background: {CARD}; color: {TEXT_SECONDARY}; padding: 40px;")
+            self._set_preview_widget(loading)
+            self._start_office_render()
+            return
+        self._load_structured_office_preview(ext)
+
+    def _load_structured_office_preview(self, ext: str) -> None:
+        """Show readable Office content when no page renderer is available."""
+        if ext == ".rtf":
+            self._load_rtf_preview()
+            return
+        if ext in {".docx", ".docm", ".odt", ".ott"}:
+            blocks = _extract_docx_blocks(self._original_file_path)
+            if blocks:
+                self._show_text_blocks(blocks, title="文档内容")
+                return
+        if ext in {".xlsx", ".xlsm", ".xltx", ".ods", ".ots"}:
+            rows = _extract_xlsx_rows(self._original_file_path)
+            if rows:
+                self._show_spreadsheet_rows(rows)
+                return
+        if ext in {".pptx", ".pptm", ".ppsx", ".odp", ".otp"}:
+            slides = _extract_pptx_slides(self._original_file_path)
+            if slides:
+                self._show_slide_text(slides)
+                return
         self._show_unsupported_card(
             "Office 文档预览",
-            "当前环境未安装 pywin32 或 Office，无法直接预览。\n"
-            "您可以点击下方按钮在系统默认应用中打开此文件。"
+            "无法在当前环境解析此文件。安装 Microsoft Office 或 LibreOffice 后可显示完整页面，"
+            "也可以使用下方按钮在系统默认应用中打开。",
         )
 
-    def _convert_office_to_pdf(self) -> bool:
-        """尝试用 pywin32 将 Office 文档转换为 PDF。
-
-        Returns:
-            转换成功返回 True（结果写入 self._temp_pdf_path），失败返回 False。
-        """
-        ext = os.path.splitext(self.file_path)[1].lower()
-        temp_dir = tempfile.gettempdir()
-        base_name = os.path.splitext(os.path.basename(self.file_path))[0]
-        output_path = os.path.join(temp_dir, f"{base_name}_preview.pdf")
-
-        try:
-            import win32com.client  # type: ignore
-            import pythoncom  # type: ignore
-        except ImportError:
+    def _office_renderer_available(self) -> bool:
+        if any(shutil.which(name) for name in ("soffice", "libreoffice")):
+            return True
+        if os.name != "nt":
             return False
-
+        prog_id = None
+        ext = os.path.splitext(self._original_file_path)[1].lower()
+        if ext in WORD_EXTS:
+            prog_id = "Word.Application"
+        elif ext in EXCEL_EXTS:
+            prog_id = "Excel.Application"
+        elif ext in PPT_EXTS:
+            prog_id = "PowerPoint.Application"
+        if prog_id is None:
+            return False
         try:
-            pythoncom.CoInitialize()
-            if ext in WORD_EXTS:
-                word = win32com.client.DispatchEx("Word.Application")
-                word.Visible = False
-                doc = word.Documents.Open(self.file_path)
-                doc.SaveAs(output_path, FileFormat=17)  # 17 = wdFormatPDF
-                doc.Close(False)
-                word.Quit()
-            elif ext in EXCEL_EXTS:
-                excel = win32com.client.DispatchEx("Excel.Application")
-                excel.Visible = False
-                wb = excel.Workbooks.Open(self.file_path)
-                wb.ExportAsFixedFormat(0, output_path)  # 0 = xlTypePDF
-                wb.Close(False)
-                excel.Quit()
-            elif ext in PPT_EXTS:
-                ppt = win32com.client.DispatchEx("PowerPoint.Application")
-                ppt.Visible = True  # PowerPoint 要求 Visible 才能导出
-                prs = ppt.Presentations.Open(self.file_path, WithWindow=False)
-                prs.SaveAs(output_path, 32)  # 32 = ppSaveAsPDF
-                prs.Close()
-                ppt.Quit()
-            else:
-                return False
-
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                self._temp_pdf_path = output_path
-                # 把 file_path 替换成转换后的 PDF，走 PDF 预览逻辑
-                self.file_path = output_path
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog_id + r"\CLSID"):
                 return True
+        except (ImportError, FileNotFoundError, OSError):
             return False
-        except Exception:  # pylint: disable=broad-except
-            return False
-        finally:
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:  # pylint: disable=broad-except
-                pass
 
-    # -- 未知类型 --
-    def _load_unknown_preview(self) -> None:
-        """未知文件类型：展示信息卡片。"""
-        self._show_unsupported_card(
-            "暂不支持预览此文件类型",
-            "您可以点击下方按钮在系统默认应用中打开此文件。"
+    def _start_office_render(self) -> None:
+        with self._resource_lock:
+            if self._cleaned_up or self._office_render_started:
+                return
+            self._office_render_started = True
+        source = self._original_file_path
+        cancel_event = self._office_cancel_event
+        signals = self._office_signals
+
+        def render() -> None:
+            try:
+                output_path, output_dir = self._convert_office_file(source, cancel_event)
+            except Exception:  # pylint: disable=broad-except
+                output_path, output_dir = "", ""
+            if not self._register_office_result(output_dir):
+                if output_dir:
+                    shutil.rmtree(output_dir, ignore_errors=True)
+                return
+            try:
+                signals.finished.emit(output_path, output_dir)
+            except RuntimeError:
+                self._discard_office_result(output_dir)
+
+        self._office_thread = threading.Thread(
+            target=render,
+            name="office-preview-render",
+            daemon=True,
+        )
+        self._office_thread.start()
+
+    def _register_office_result(self, output_dir: str) -> bool:
+        """Register a worker result until the GUI either claims or cleans it."""
+        with self._resource_lock:
+            if self._cleaned_up:
+                return False
+            if output_dir:
+                self._pending_office_dirs.add(output_dir)
+            return True
+
+    def _claim_office_result(self, output_dir: str) -> bool:
+        with self._resource_lock:
+            if output_dir:
+                self._pending_office_dirs.discard(output_dir)
+            return not self._cleaned_up
+
+    def _discard_office_result(self, output_dir: str) -> None:
+        with self._resource_lock:
+            if output_dir:
+                self._pending_office_dirs.discard(output_dir)
+        if output_dir:
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    def _on_office_rendered(self, output_path: str, output_dir: str) -> None:
+        if not self._claim_office_result(output_dir):
+            if output_dir:
+                shutil.rmtree(output_dir, ignore_errors=True)
+            return
+        if output_path and os.path.isfile(output_path):
+            self._temp_pdf_path = output_path
+            self._temp_pdf_dir = output_dir
+            self.file_path = output_path
+            self._load_pdf_preview(output_path)
+            return
+        if output_dir:
+            shutil.rmtree(output_dir, ignore_errors=True)
+        self._load_structured_office_preview(
+            os.path.splitext(self._original_file_path)[1].lower()
         )
 
-    # -- 通用：错误 / 不支持卡片 --
+    def _show_text_blocks(self, blocks: Sequence[str], title: str = "") -> None:
+        text_edit = QPlainTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText((title + "\n\n" if title else "") + "\n\n".join(blocks))
+        text_edit.setStyleSheet(
+            f"QPlainTextEdit {{ background: {CARD}; border: none; font-family: Microsoft YaHei UI, sans-serif; "
+            f"font-size: 13px; padding: 18px; color: {TEXT}; }}"
+        )
+        self._set_preview_widget(text_edit)
+
+    def _show_spreadsheet_rows(self, rows: Sequence[tuple[str, Sequence[str]]]) -> None:
+        max_columns = min(max(len(values) for _, values in rows), 40)
+        table = QTableWidget(len(rows), max_columns + 1)
+        table.setHorizontalHeaderLabels(["工作表"] + [f"列 {idx + 1}" for idx in range(max_columns)])
+        table.setAlternatingRowColors(True)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        for row, (sheet, values) in enumerate(rows):
+            table.setItem(row, 0, QTableWidgetItem(sheet))
+            for column, value in enumerate(values[:max_columns], start=1):
+                table.setItem(row, column, QTableWidgetItem(str(value)))
+        table.resizeColumnsToContents()
+        self._set_preview_widget(table)
+
+    def _show_slide_text(self, slides: Sequence[str]) -> None:
+        self._show_text_blocks([f"第 {index + 1} 页\n{text}" for index, text in enumerate(slides)], title="演示文稿")
+
+    @staticmethod
+    def _wait_for_converter(process, cancel_event: Optional[threading.Event], timeout: float = 90.0) -> int:
+        """Wait for a dedicated converter process while allowing dialog close."""
+        deadline = monotonic() + timeout
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            try:
+                return process.wait(timeout=min(0.2, remaining))
+            except subprocess.TimeoutExpired:
+                continue
+        try:
+            process.terminate()
+            process.wait(timeout=3)
+        except (OSError, subprocess.SubprocessError):
+            try:
+                process.kill()
+                process.wait(timeout=3)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return -1
+
+    @staticmethod
+    def _convert_office_file(
+        source_path: str,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> tuple[str, str]:
+        """Render an Office file to PDF without touching Qt GUI objects."""
+        ext = os.path.splitext(source_path)[1].lower()
+        if ext not in OFFICE_EXTS or (cancel_event is not None and cancel_event.is_set()):
+            return "", ""
+        output_dir = tempfile.mkdtemp(prefix="fudan_preview_")
+        output_path = os.path.join(output_dir, f"{Path(source_path).stem}.pdf")
+        keep_output = False
+        try:
+            try:
+                import win32com.client  # type: ignore
+                import pythoncom  # type: ignore
+            except (ImportError, OSError):
+                win32com = pythoncom = None  # type: ignore
+            if win32com is not None and pythoncom is not None:
+                word = excel = ppt = doc = workbook = presentation = None
+                com_initialized = False
+                try:
+                    pythoncom.CoInitialize()
+                    com_initialized = True
+                    if ext in WORD_EXTS:
+                        word = win32com.client.DispatchEx("Word.Application")
+                        word.Visible = False
+                        word.DisplayAlerts = 0
+                        word.AutomationSecurity = 3
+                        doc = word.Documents.Open(
+                            source_path,
+                            ConfirmConversions=False,
+                            ReadOnly=True,
+                            AddToRecentFiles=False,
+                            Visible=False,
+                            OpenAndRepair=True,
+                        )
+                        doc.SaveAs(output_path, FileFormat=17)
+                    elif ext in EXCEL_EXTS:
+                        excel = win32com.client.DispatchEx("Excel.Application")
+                        excel.Visible = False
+                        excel.DisplayAlerts = False
+                        excel.AutomationSecurity = 3
+                        workbook = excel.Workbooks.Open(
+                            source_path,
+                            UpdateLinks=0,
+                            ReadOnly=True,
+                            IgnoreReadOnlyRecommended=True,
+                            AddToMru=False,
+                        )
+                        workbook.ExportAsFixedFormat(0, output_path)
+                    else:
+                        ppt = win32com.client.DispatchEx("PowerPoint.Application")
+                        ppt.AutomationSecurity = 3
+                        # Several Office versions refuse export while the
+                        # application is hidden. WithWindow hides the document.
+                        ppt.Visible = True
+                        presentation = ppt.Presentations.Open(
+                            source_path, WithWindow=False, ReadOnly=True
+                        )
+                        presentation.SaveAs(output_path, 32)
+                    if (
+                        os.path.isfile(output_path)
+                        and os.path.getsize(output_path) > 0
+                        and not (cancel_event is not None and cancel_event.is_set())
+                    ):
+                        keep_output = True
+                        return output_path, output_dir
+                except Exception:  # pylint: disable=broad-except
+                    pass
+                finally:
+                    for obj, args in ((doc, (False,)), (workbook, (False,)), (presentation, ())):
+                        if obj is not None:
+                            try:
+                                obj.Close(*args)
+                            except Exception:  # pylint: disable=broad-except
+                                pass
+                    for app in (word, excel, ppt):
+                        if app is not None:
+                            try:
+                                app.Quit()
+                            except Exception:  # pylint: disable=broad-except
+                                pass
+                    if com_initialized:
+                        try:
+                            pythoncom.CoUninitialize()
+                        except Exception:  # pylint: disable=broad-except
+                            pass
+            if cancel_event is not None and cancel_event.is_set():
+                return "", ""
+            for executable in ("soffice", "libreoffice"):
+                executable_path = shutil.which(executable)
+                if executable_path is None:
+                    continue
+                try:
+                    profile_dir = os.path.join(output_dir, "libreoffice-profile")
+                    os.makedirs(profile_dir, exist_ok=True)
+                    process = subprocess.Popen(
+                        [
+                            executable_path,
+                            "--headless",
+                            "--nologo",
+                            "--nodefault",
+                            "--nofirststartwizard",
+                            f"-env:UserInstallation={Path(profile_dir).as_uri()}",
+                            "--convert-to",
+                            "pdf",
+                            "--outdir",
+                            output_dir,
+                            source_path,
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=(
+                            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                            if os.name == "nt" else 0
+                        ),
+                    )
+                    return_code = DocumentPreviewDialog._wait_for_converter(
+                        process, cancel_event
+                    )
+                    generated = os.path.join(output_dir, f"{Path(source_path).stem}.pdf")
+                    if (
+                        return_code == 0
+                        and os.path.isfile(generated)
+                        and os.path.getsize(generated) > 0
+                        and not (cancel_event is not None and cancel_event.is_set())
+                    ):
+                        keep_output = True
+                        return generated, output_dir
+                except (OSError, subprocess.SubprocessError, ValueError):
+                    pass
+            return "", ""
+        finally:
+            if not keep_output:
+                shutil.rmtree(output_dir, ignore_errors=True)
+
+    # -- media --------------------------------------------------------
+    @staticmethod
+    def _multimedia_classes():
+        try:
+            from ..bootstrap import ensure_qtmultimedia
+            ensure_qtmultimedia()
+        except Exception:  # pragma: no cover
+            pass
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+        try:
+            from PySide6.QtMultimediaWidgets import QVideoWidget
+        except ImportError:
+            QVideoWidget = None
+        return QAudioOutput, QMediaPlayer, QVideoWidget
+
+    def _load_media_preview(self, is_video: bool) -> None:
+        try:
+            QAudioOutput, QMediaPlayer, QVideoWidget = self._multimedia_classes()
+        except (ImportError, OSError) as exc:
+            self._show_unsupported_card(
+                "媒体播放组件不可用",
+                f"当前环境无法加载 Qt 多媒体组件（{exc}）。请安装完整的 PySide6 或使用默认应用打开。",
+            )
+            return
+        if is_video and QVideoWidget is None:
+            self._show_unsupported_card("视频组件不可用", "当前环境缺少 QtMultimediaWidgets，无法在软件内显示视频。")
+            return
+        self.media_player = QMediaPlayer(self)
+        self.audio_output = QAudioOutput(self)
+        self.audio_output.setVolume(0.8)
+        self.media_player.setAudioOutput(self.audio_output)
+        container = QWidget()
+        container.setStyleSheet(f"background: {CARD};")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        if is_video:
+            self.video_widget = QVideoWidget(container)
+            self.video_widget.setMinimumHeight(300)
+            self.video_widget.setStyleSheet("background: #111827; border-radius: 8px;")
+            self.media_player.setVideoOutput(self.video_widget)
+            layout.addWidget(self.video_widget, 1)
+        else:
+            banner = QLabel("音频预览")
+            banner.setAlignment(Qt.AlignCenter)
+            banner.setMinimumHeight(180)
+            banner.setStyleSheet(
+                f"background: #EEF1FB; border-radius: 10px; color: {ACCENT}; font-size: 24px; font-weight: 600;"
+            )
+            layout.addWidget(banner, 1)
+        layout.addWidget(self._build_media_controls())
+        self._set_preview_widget(container)
+        self.media_player.setSource(QUrl.fromLocalFile(self.file_path))
+
+    def _build_media_controls(self) -> QWidget:
+        controls = QWidget()
+        root = QVBoxLayout(controls)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
+        seek_row = QHBoxLayout()
+        self.position_slider = QSlider(Qt.Horizontal)
+        self.position_slider.setRange(0, 0)
+        self.position_slider.setEnabled(False)
+        self.position_slider.setToolTip("拖动调整播放位置")
+        self.position_slider.sliderMoved.connect(self._seek_media)
+        self.time_label = QLabel("0:00 / 0:00")
+        self.time_label.setMinimumWidth(90)
+        self.time_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        seek_row.addWidget(self.position_slider, 1)
+        seek_row.addWidget(self.time_label)
+        root.addLayout(seek_row)
+        action_row = QHBoxLayout()
+        self.play_button = QToolButton()
+        self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.play_button.setIconSize(QSize(18, 18))
+        self.play_button.setFixedSize(36, 32)
+        self.play_button.setAccessibleName("播放")
+        self.play_button.setToolTip("播放/暂停")
+        self.play_button.clicked.connect(self._toggle_media)
+        stop_button = QToolButton()
+        stop_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        stop_button.setIconSize(QSize(18, 18))
+        stop_button.setFixedSize(36, 32)
+        stop_button.setAccessibleName("停止")
+        stop_button.setToolTip("停止并回到开头")
+        stop_button.clicked.connect(self._stop_media)
+        back_button = QToolButton()
+        back_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekBackward))
+        back_button.setIconSize(QSize(18, 18))
+        back_button.setFixedSize(36, 32)
+        back_button.setAccessibleName("后退 10 秒")
+        back_button.setToolTip("后退 10 秒")
+        back_button.clicked.connect(lambda: self._nudge_media(-10000))
+        forward_button = QToolButton()
+        forward_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward))
+        forward_button.setIconSize(QSize(18, 18))
+        forward_button.setFixedSize(36, 32)
+        forward_button.setAccessibleName("前进 10 秒")
+        forward_button.setToolTip("前进 10 秒")
+        forward_button.clicked.connect(lambda: self._nudge_media(10000))
+        self.loop_checkbox = QCheckBox("单曲循环")
+        self.loop_checkbox.setToolTip("播放结束后自动从头播放")
+        self.loop_checkbox.toggled.connect(self._set_media_loop)
+        volume_label = QLabel("音量")
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(80)
+        self.volume_slider.setMaximumWidth(110)
+        self.volume_slider.valueChanged.connect(self._set_media_volume)
+        for widget in (self.play_button, stop_button, back_button, forward_button, self.loop_checkbox):
+            action_row.addWidget(widget)
+        action_row.addStretch()
+        action_row.addWidget(volume_label)
+        action_row.addWidget(self.volume_slider)
+        root.addLayout(action_row)
+        self.media_message_label = QLabel()
+        self.media_message_label.setWordWrap(True)
+        self.media_message_label.setStyleSheet("color: #D64545; font-size: 12px;")
+        self.media_message_label.hide()
+        root.addWidget(self.media_message_label)
+        self.media_player.positionChanged.connect(self._on_media_position)
+        self.media_player.durationChanged.connect(self._on_media_duration)
+        self.media_player.playbackStateChanged.connect(self._on_media_state)
+        self.media_player.mediaStatusChanged.connect(self._on_media_status)
+        if hasattr(self.media_player, "seekableChanged"):
+            self.media_player.seekableChanged.connect(self._on_media_seekable)
+        if hasattr(self.media_player, "errorOccurred"):
+            self.media_player.errorOccurred.connect(self._on_media_error)
+        return controls
+
+    def _toggle_media(self) -> None:
+        if self.media_player is None:
+            return
+        state = self.media_player.playbackState()
+        playing = getattr(type(state), "PlayingState", None) or getattr(self.media_player, "PlayingState", 1)
+        if state == playing:
+            self.media_player.pause()
+        else:
+            self.media_player.play()
+
+    def _stop_media(self) -> None:
+        if self.media_player is not None:
+            self.media_player.stop()
+            self.media_player.setPosition(0)
+
+    def _seek_media(self, position: int) -> None:
+        if self.media_player is not None:
+            self.media_player.setPosition(int(position))
+
+    def _nudge_media(self, amount: int) -> None:
+        if self.media_player is not None:
+            self.media_player.setPosition(max(0, self.media_player.position() + amount))
+
+    def _set_media_loop(self, enabled: bool) -> None:
+        if self.media_player is None:
+            return
+        try:
+            loops = type(self.media_player).Loops
+            # Qt 6 exposes Infinite/Once (Qt 5 used CurrentItem in a few
+            # bindings).  Prefer Infinite and retain the status-signal
+            # fallback below for older or mocked players.
+            target = getattr(loops, "Infinite", getattr(loops, "CurrentItem", -1)) if enabled else loops.Once
+            self.media_player.setLoops(target)
+        except (AttributeError, TypeError):
+            pass
+
+    def _set_media_volume(self, value: int) -> None:
+        if self.audio_output is not None:
+            self.audio_output.setVolume(max(0.0, min(1.0, value / 100.0)))
+
+    def _on_media_position(self, position: int) -> None:
+        if self.position_slider is not None and not self.position_slider.isSliderDown():
+            self.position_slider.setValue(position)
+        if self.time_label is not None and self.media_player is not None:
+            self.time_label.setText(f"{_format_time(position)} / {_format_time(self.media_player.duration())}")
+
+    def _on_media_duration(self, duration: int) -> None:
+        if self.position_slider is not None:
+            self.position_slider.setRange(0, max(0, duration))
+        self._on_media_position(self.media_player.position() if self.media_player is not None else 0)
+
+    def _on_media_state(self, state) -> None:
+        if self.play_button is not None:
+            playing = getattr(state, "name", "") == "PlayingState"
+            icon = QStyle.StandardPixmap.SP_MediaPause if playing else QStyle.StandardPixmap.SP_MediaPlay
+            self.play_button.setIcon(self.style().standardIcon(icon))
+            self.play_button.setAccessibleName("暂停" if playing else "播放")
+
+    def _on_media_seekable(self, seekable: bool) -> None:
+        if self.position_slider is not None:
+            self.position_slider.setEnabled(bool(seekable))
+
+    def _on_media_error(self, _error=None, message: str = "") -> None:
+        if self.media_message_label is None:
+            return
+        if not message and self.media_player is not None:
+            try:
+                message = self.media_player.errorString()
+            except (AttributeError, RuntimeError):
+                pass
+        self.media_message_label.setText(
+            f"无法播放此媒体：{message or '格式或编码不受当前系统支持'}"
+        )
+        self.media_message_label.show()
+
+    def _on_media_status(self, status) -> None:
+        if self.media_message_label is not None and getattr(status, "name", "") in {
+            "LoadedMedia", "BufferedMedia", "BufferingMedia",
+        }:
+            self.media_message_label.clear()
+            self.media_message_label.hide()
+        if self.media_player is None or self.loop_checkbox is None or not self.loop_checkbox.isChecked():
+            return
+        if getattr(status, "name", "") == "EndOfMedia":
+            self.media_player.setPosition(0)
+            self.media_player.play()
+
+    # -- generic cards/actions ---------------------------------------
+    def _load_unknown_preview(self) -> None:
+        self._show_unsupported_card("暂不支持预览此文件类型", "您可以点击下方按钮在系统默认应用中打开此文件。")
+
     def _show_error(self, message: str) -> None:
-        """显示错误信息。"""
         self._show_info_card("预览失败", message, is_error=True)
 
     def _show_unsupported_card(self, title: str, description: str) -> None:
-        """显示不支持预览的信息卡片。"""
         self._show_info_card(title, description, is_error=False)
 
     def _show_info_card(self, title: str, description: str, is_error: bool = False) -> None:
-        """展示居中的信息卡片（用于错误提示 / 不支持的类型）。"""
         container = QWidget()
         container.setStyleSheet(f"background: {CARD};")
-
         outer = QVBoxLayout(container)
         outer.setAlignment(Qt.AlignCenter)
         outer.setContentsMargins(40, 60, 40, 60)
-
         card = QFrame()
         card.setObjectName("card")
-        card.setMaximumWidth(420)
+        card.setMaximumWidth(520)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(24, 20, 24, 20)
         card_layout.setSpacing(10)
-
         title_label = QLabel(title)
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet(
-            f"font-size: 15px; font-weight: 600; "
-            f"color: {'#D64545' if is_error else TEXT};"
-        )
-
+        title_label.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {'#D64545' if is_error else TEXT};")
         desc_label = QLabel(description)
         desc_label.setAlignment(Qt.AlignCenter)
         desc_label.setWordWrap(True)
         desc_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px;")
-
         open_btn = QPushButton("在默认应用打开")
         open_btn.setObjectName("primary")
-        open_btn.setCursor(Qt.PointingHandCursor)
         open_btn.clicked.connect(self._on_open_default)
-
         card_layout.addWidget(title_label)
         card_layout.addWidget(desc_label)
         card_layout.addSpacing(6)
         card_layout.addWidget(open_btn)
-
         outer.addWidget(card)
-
         self._set_preview_widget(container)
 
-    # ------------------------------------------------------------------
-    # 按钮事件
-    # ------------------------------------------------------------------
     def _on_open_default(self) -> None:
-        """用系统默认应用打开文件。"""
         try:
+            path = self._original_path()
             if os.name == "nt":
-                os.startfile(self._original_path())  # type: ignore[attr-defined]
+                os.startfile(path)  # type: ignore[attr-defined]
             else:
-                import subprocess
-                subprocess.Popen(["xdg-open", self._original_path()])
+                subprocess.Popen(["xdg-open", path])
         except Exception as exc:  # pylint: disable=broad-except
             QMessageBox.warning(self, "打开失败", f"无法打开文件：{exc}")
 
     def _original_path(self) -> str:
-        """获取原始文件路径（Office 转 PDF 后，返回原 Office 文件路径）。"""
         return self._original_file_path
 
     def _on_share(self) -> None:
-        """分享：将文件复制到用户选择的目录。"""
-        target_dir = QFileDialog.getExistingDirectory(
-            self, "选择保存位置（将复制文件到此目录）",
-            os.path.expanduser("~"))
-        if not target_dir:
-            return
+        show_share_menu(self, self._original_path(), anchor=self.share_btn)
 
-        src = self._original_path()
-        dst = os.path.join(target_dir, os.path.basename(src))
-
-        # 目标已存在则自动重命名
-        if os.path.exists(dst):
-            base, ext = os.path.splitext(dst)
-            idx = 1
-            while os.path.exists(f"{base} ({idx}){ext}"):
-                idx += 1
-            dst = f"{base} ({idx}){ext}"
-
-        try:
-            shutil.copy2(src, dst)
-            QMessageBox.information(self, "分享完成",
-                                    f"文件已复制到：\n{dst}")
-        except Exception as exc:  # pylint: disable=broad-except
-            QMessageBox.warning(self, "复制失败", f"无法复制文件：{exc}")
-
-    # ------------------------------------------------------------------
-    def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名约定)
-        """关闭时清理临时文件。"""
+    def _cleanup_resources(self) -> None:
+        """Release native handles and generated files exactly once."""
+        with self._resource_lock:
+            if self._cleaned_up:
+                return
+            self._cleaned_up = True
+            self._office_cancel_event.set()
+            pending_office_dirs = tuple(self._pending_office_dirs)
+            self._pending_office_dirs.clear()
+        if self.media_player is not None:
+            try:
+                self.media_player.stop()
+                self.media_player.setSource(QUrl())
+            except Exception:  # pylint: disable=broad-except
+                pass
+        if self._image_widget is not None and self._image_widget._movie is not None:
+            self._image_widget._movie.stop()
+        if self._pdf_view is not None:
+            try:
+                self._pdf_view.setDocument(None)
+            except (TypeError, RuntimeError):
+                pass
+        if self._pdf_document is not None:
+            document = self._pdf_document
+            self._pdf_document = None
+            try:
+                document.close()
+            except (AttributeError, RuntimeError):
+                pass
+            # On Windows QPdfDocument.close() changes its status to Null but
+            # Qt keeps the native file handle until the QObject is destroyed.
+            # Destroy it synchronously before removing an Office conversion.
+            try:
+                import shiboken6  # type: ignore
+                shiboken6.delete(document)
+            except (ImportError, RuntimeError):
+                document.deleteLater()
         if self._temp_pdf_path and os.path.exists(self._temp_pdf_path):
             try:
                 os.remove(self._temp_pdf_path)
             except OSError:
                 pass
+        if self._temp_pdf_dir and os.path.isdir(self._temp_pdf_dir):
+            shutil.rmtree(self._temp_pdf_dir, ignore_errors=True)
+        for output_dir in pending_office_dirs:
+            if output_dir != self._temp_pdf_dir:
+                shutil.rmtree(output_dir, ignore_errors=True)
+
+    def done(self, result: int) -> None:
+        """QDialog.accept/reject bypass closeEvent on some Qt platforms."""
+        self._cleanup_resources()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._cleanup_resources()
         super().closeEvent(event)

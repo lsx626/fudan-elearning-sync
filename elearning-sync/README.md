@@ -28,6 +28,14 @@ pip install -r requirements.txt
 
 > 需要 Python 3.10+。浏览器登录方式还需额外执行 `playwright install chromium`。
 
+桌面端会在软件内预览 PDF、图片、文本、常见 Office 文档以及音视频；
+`PySide6-Addons` 提供 QtMultimedia，`python-docx`、`openpyxl`、`python-pptx`
+和 `odfpy` 用于 Office/ODF 内容解析。若从源码运行，建议使用完整的
+PySide6 wheel（不要只安装 `PySide6-Essentials`）。
+
+配置文件中的相对路径（下载目录、状态库、Cookie 和日志）均以配置文件所在目录为基准，
+因此可以从桌面快捷方式或任务计划程序启动而不会把数据写到不可预期的当前目录。
+
 ### 2. 登录
 
 首次运行任意命令时会自动从 `config.example.yaml` 生成 `config.yaml`。
@@ -60,7 +68,8 @@ python sync.py login --method browser
 python sync.py login --method cookie
 ```
 
-三种方式都会调用 `/api/v1/users/self` 验证凭据是否有效。
+上述方式都会调用 `/api/v1/users/self` 验证凭据是否有效；图形界面首次登录还支持 UIS
+账号密码（密码可保存到系统钥匙串）。
 
 ### 3. 列出课程
 
@@ -95,6 +104,16 @@ python sync.py files              # 列出本地已记录的全部文件
 python sync.py files --course 12345
 ```
 
+### 7. 构建 Windows 发布包（可选）
+
+```bash
+pip install pyinstaller
+pyinstaller 复小学.spec
+```
+
+spec 文件会收集 QtMultimedia/QtPdf 的延迟导入和多媒体插件；生成的
+`dist/复小学/` 可直接交给 `installer/setup.iss` 制作安装程序。
+
 ## 配置说明
 
 编辑 `config.yaml`（首次运行自动生成），完整示例见 `config.example.yaml`：
@@ -108,7 +127,7 @@ python sync.py files --course 12345
 | `root_dir` | 本地下载根目录 | `./elearning_files` |
 | `state_db` | 状态数据库路径 | `./sync_state.db` |
 | `log_file` | 日志文件（空 = 仅控制台） | `./sync.log` |
-| `sync.interval_minutes` | 守护进程轮询间隔（分钟） | `30` |
+| `sync.interval_minutes` | 守护进程轮询间隔（分钟） | `15` |
 | `sync.only_favorites` | 仅同步星标收藏课程 | `false` |
 | `sync.enrollment_type` | 角色过滤：student/teacher/ta/observer/designer | `student` |
 | `sync.include_courses` / `exclude_courses` | 课程 ID 白/黑名单 | `[]` |

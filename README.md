@@ -7,8 +7,9 @@
 - **自动登录**：首次输入 UIS 账号密码后，自动登录、自动同步，密码安全存储于系统密钥库
 - **定时同步**：默认每 15 分钟增量同步，大幅减少流量消耗
 - **双端支持**：Windows 桌面程序（安装包）+ Android 应用（APK，支持 Android 8~16）
-- **文件预览**：应用内预览 PDF / Word / Excel / PPT / 图片 / 文本（Android 端调用系统查看器）
-- **文件分享**：一键分享已下载文件
+- **文件预览**：PC 端应用内预览 PDF / Word / Excel / PPT / ODF / 图片 / 文本，Android 端调用系统查看器
+- **音视频播放**：PC 端内置音视频播放器，支持拖动进度、音量控制和单曲循环
+- **文件分享**：复制文件到剪贴板、另存副本、复制路径或在文件夹中定位
 - **存储管理**：按学期、课程批量管理（删除）文件
 - **通知提醒**：下载新文件后弹 Windows 通知 / Android 通知
 - **内容过滤**：自动过滤课程封面图、安装包（exe/msi 等）、空课程站点
@@ -67,7 +68,14 @@ pip install -r requirements.txt
 python gui.py
 ```
 
-打包：`python -m PyInstaller --windowed --icon build_assets/app.ico gui.py`
+打包前应确认安装的是同一版本的完整 `PySide6` / `PySide6-Addons`，然后使用项目 spec，
+以便收集 QtMultimedia、QtPdf 和媒体后端：
+
+```bash
+pip install pyinstaller
+python -m PyInstaller 复小学.spec
+```
+
 安装包：Inno Setup 编译 `installer/setup.iss`
 
 ### Android 端

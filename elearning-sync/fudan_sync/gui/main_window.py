@@ -3,17 +3,19 @@ from __future__ import annotations
 
 import datetime
 import os
-import shutil
 import webbrowser
 from typing import Optional
+from weakref import ref
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QTextCursor
-from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame,
+from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication,
+                           QTextCursor)
+from PySide6.QtWidgets import (QAbstractItemView, QFrame,
                                QGridLayout, QHBoxLayout, QHeaderView, QLabel,
                                QMainWindow, QMenu, QMessageBox, QProgressBar,
                                QPushButton, QSplitter, QStatusBar, QTableWidget,
-                               QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
+                               QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+                               QSizePolicy)
 
 from .. import __version__
 from ..auth import AuthError
@@ -26,6 +28,7 @@ from .login_window import LoginWindow
 from .notifier import WindowsNotifier
 from .previewer import DocumentPreviewDialog
 from .settings_dialog import SettingsDialog
+from .sharing import show_share_menu
 from .storage_manager import StorageManagerDialog
 from .styles import (ACCENT, BG, CARD, SUCCESS, TEXT, TEXT_SECONDARY, WARNING, DANGER)
 from .tray import TrayController
@@ -66,6 +69,39 @@ def _relative_time(value: str) -> str:
     return parsed.astimezone().strftime("%Y-%m-%d")
 
 
+class ElidedLabel(QLabel):
+    """单行文本标签：空间不足时省略末尾，并保留完整文本提示。"""
+
+    def __init__(self, text: str = "", parent: Optional[QWidget] = None):
+        self._full_text = ""
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt API name
+        self._full_text = str(text or "")
+        self._refresh_elided_text()
+
+    def text(self) -> str:  # noqa: N802 - Qt API name
+        """返回未截断文本，便于登录状态和辅助功能读取。"""
+        return self._full_text
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        super().resizeEvent(event)
+        self._refresh_elided_text()
+
+    def _refresh_elided_text(self) -> None:
+        width = max(0, self.contentsRect().width())
+        if width:
+            rendered = QFontMetrics(self.font()).elidedText(
+                self._full_text, Qt.ElideRight, width)
+        else:
+            rendered = self._full_text
+        if QLabel.text(self) != rendered:
+            QLabel.setText(self, rendered)
+        self.setToolTip(self._full_text if rendered != self._full_text else "")
+
+
 class MainWindow(QMainWindow):
     """主窗口。启动时先静默登录，失败则弹出登录引导窗。"""
 
@@ -73,8 +109,10 @@ class MainWindow(QMainWindow):
 
     def __init__(self, config_path: str, start_minimized: bool = False):
         super().__init__()
-        self.config_path = config_path
         self.cfg = load_config(config_path)
+        # Keep every later settings/auth write anchored to the same normalized
+        # file that load_config read, including when --config was relative.
+        self.config_path = self.cfg.config_path
         self.start_minimized = start_minimized
         self.sync_worker: Optional[SyncWorker] = None
         self.login_worker: Optional[SilentLoginWorker] = None
@@ -139,42 +177,37 @@ class MainWindow(QMainWindow):
         icon_label.setPixmap(app_icon().pixmap(40, 40))
         header_layout.addWidget(icon_label)
 
-        titles = QVBoxLayout()
+        title_container = QWidget()
+        title_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        titles = QVBoxLayout(title_container)
         titles.setSpacing(1)
         title = QLabel("复小学")
         title.setObjectName("titleLabel")
-        subtitle = QLabel(f"{self.cfg.base_url.replace('https://', '')} · 本地目录 {self.cfg.root_dir}")
+        subtitle = ElidedLabel(
+            f"{self.cfg.base_url.replace('https://', '')} · 本地目录 {self.cfg.root_dir}")
         subtitle.setObjectName("subtitleLabel")
         titles.addWidget(title)
         titles.addWidget(subtitle)
-        header_layout.addLayout(titles)
-        header_layout.addStretch()
+        header_layout.addWidget(title_container, 1)
 
-        self.user_chip = QLabel("连接中…")
+        self.user_chip = ElidedLabel("连接中…")
+        self.user_chip.setMaximumWidth(180)
+        self.user_chip.setMinimumWidth(72)
+        self.user_chip.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.user_chip.setStyleSheet(
             f"background: {CARD}; border: 1px solid #E2E7F1; border-radius: 12px;"
             f"padding: 5px 12px; color: {TEXT_SECONDARY};")
         header_layout.addWidget(self.user_chip)
 
-        open_button = QPushButton("打开同步目录")
-        open_button.setCursor(Qt.PointingHandCursor)
-        open_button.clicked.connect(self._open_root_dir)
-        header_layout.addWidget(open_button)
-
-        storage_button = QPushButton("存储管理")
-        storage_button.setCursor(Qt.PointingHandCursor)
-        storage_button.clicked.connect(self._open_storage_manager)
-        header_layout.addWidget(storage_button)
-
-        settings_button = QPushButton("设置")
-        settings_button.setCursor(Qt.PointingHandCursor)
-        settings_button.clicked.connect(self._open_settings)
-        header_layout.addWidget(settings_button)
-
-        log_button = QPushButton("日志")
-        log_button.setCursor(Qt.PointingHandCursor)
-        log_button.clicked.connect(self._toggle_log_panel)
-        header_layout.addWidget(log_button)
+        for text, handler in (("打开同步目录", self._open_root_dir),
+                              ("存储管理", self._open_storage_manager),
+                              ("设置", self._open_settings),
+                              ("日志", self._toggle_log_panel)):
+            button = QPushButton(text)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setMinimumHeight(34)
+            button.clicked.connect(handler)
+            header_layout.addWidget(button)
         return header
 
     def _build_stats_row(self) -> QWidget:
@@ -210,13 +243,15 @@ class MainWindow(QMainWindow):
     def _build_sync_bar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("card")
+        bar.setMinimumHeight(68)
+        bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setContentsMargins(18, 12, 18, 12)
         layout.setSpacing(14)
 
         self.sync_state_label = QLabel("准备就绪")
         self.sync_state_label.setStyleSheet(f"font-weight: 600; color: {TEXT};")
-        self.sync_detail_label = QLabel("")
+        self.sync_detail_label = ElidedLabel("")
         self.sync_detail_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
 
         text_column = QVBoxLayout()
@@ -226,29 +261,44 @@ class MainWindow(QMainWindow):
         layout.addLayout(text_column, 1)
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedWidth(220)
+        self.progress_bar.setMinimumWidth(120)
+        self.progress_bar.setMaximumWidth(220)
+        self.progress_bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
 
+        action_layout = QHBoxLayout()
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(8)
+
         self.sync_button = QPushButton("立即同步")
         self.sync_button.setObjectName("primary")
         self.sync_button.setCursor(Qt.PointingHandCursor)
+        self.sync_button.setMinimumSize(100, 36)
+        self.sync_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.sync_button.setToolTip("立即执行一次增量同步")
         self.sync_button.clicked.connect(lambda: self._start_sync(full=False))
-        layout.addWidget(self.sync_button)
+        action_layout.addWidget(self.sync_button)
 
         self.full_sync_button = QPushButton("全量同步")
         self.full_sync_button.setCursor(Qt.PointingHandCursor)
+        self.full_sync_button.setMinimumSize(100, 36)
+        self.full_sync_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.full_sync_button.setToolTip("忽略本地状态，重新检查全部课程")
         self.full_sync_button.clicked.connect(self._confirm_full_sync)
-        layout.addWidget(self.full_sync_button)
+        action_layout.addWidget(self.full_sync_button)
 
         self.stop_button = QPushButton("停止")
         self.stop_button.setObjectName("danger")
         self.stop_button.setCursor(Qt.PointingHandCursor)
+        self.stop_button.setMinimumSize(72, 36)
+        self.stop_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.stop_button.clicked.connect(self._stop_sync)
         self.stop_button.setVisible(False)
-        layout.addWidget(self.stop_button)
+        action_layout.addWidget(self.stop_button)
+        layout.addLayout(action_layout)
         return bar
 
     def _build_course_splitter(self) -> QWidget:
@@ -795,8 +845,26 @@ class MainWindow(QMainWindow):
             return
         if self.preview_dialog is not None and self.preview_dialog.isVisible():
             self.preview_dialog.close()
-        self.preview_dialog = DocumentPreviewDialog(file_path, parent=self)
-        self.preview_dialog.show()
+        dialog = DocumentPreviewDialog(file_path, parent=self)
+        dialog_ref = ref(dialog)
+        dialog.finished.connect(
+            lambda _result, preview_ref=dialog_ref: self._release_preview_dialog(
+                preview_ref()
+            )
+        )
+        self.preview_dialog = dialog
+        dialog.show()
+
+    def _release_preview_dialog(
+        self, dialog: Optional[DocumentPreviewDialog]
+    ) -> None:
+        """Forget only the preview that actually finished.
+
+        The identity check prevents a delayed signal from an older background
+        Office preview from clearing a newer dialog's reference.
+        """
+        if self.preview_dialog is dialog:
+            self.preview_dialog = None
 
     def _file_context_menu(self, position) -> None:
         """文件列表右键菜单：预览文件、分享文件、打开课程目录。"""
@@ -817,26 +885,13 @@ class MainWindow(QMainWindow):
         if action == preview_action and file_path:
             self._preview_selected_file()
         elif action == share_action and file_path:
-            self._share_file(file_path)
+            show_share_menu(
+                self,
+                file_path,
+                global_position=self.file_table.viewport().mapToGlobal(position),
+            )
         elif action == open_dir_action:
             self._open_course_dir(course_id)
-
-    def _share_file(self, file_path: str) -> None:
-        """分享文件：弹出保存对话框，将文件复制到用户选择的位置。"""
-        default_name = os.path.basename(file_path)
-        target_path, _ = QFileDialog.getSaveFileName(
-            self, "分享文件 - 选择保存位置",
-            os.path.join(os.path.expanduser("~"), default_name),
-            "所有文件 (*.*)")
-        if not target_path:
-            return
-
-        try:
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            shutil.copy2(file_path, target_path)
-            QMessageBox.information(self, "分享完成", f"文件已复制到：\n{target_path}")
-        except Exception as exc:  # pylint: disable=broad-except
-            QMessageBox.warning(self, "分享失败", f"无法复制文件：{exc}")
 
     # ==================================================================
     # 存储管理

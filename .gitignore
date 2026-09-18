@@ -15,6 +15,14 @@ elearning-sync/installer/release/
 elearning-sync/_debug*.py
 elearning-sync/_debug*.html
 elearning-sync/_test_login.py
+elearning-sync/.qt-runtime-test/
+elearning-sync/.packaging-test/
+elearning-sync/.packaging-runtime/
+elearning-sync/.packaging-venv/
+elearning-sync/.packaging-build/
+elearning-sync/.packaging-dist/
+elearning-sync/*_probe.png
+elearning-sync/vendor/
 
 # Android
 android-app/.gradle/
@@ -39,6 +47,9 @@ Thumbs.db
 release/
 
 *.spec
+# Keep the release recipe versioned; other local/spec scratch files remain
+# ignored by the rule above.
+!elearning-sync/复小学.spec
 
 # Android UI 测试截图
 android-app/screenshots/

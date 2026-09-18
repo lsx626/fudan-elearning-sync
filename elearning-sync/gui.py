@@ -11,6 +11,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Probe multimedia support before importing Qt submodules. The previewer uses
+# this same side-effect-free check to provide a clear fallback in minimal
+# environments; release builds require the matching PySide6-Addons package.
+from fudan_sync.bootstrap import ensure_qtmultimedia  # noqa: E402
+ensure_qtmultimedia()
+
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtNetwork import QLocalServer, QLocalSocket  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402

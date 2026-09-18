@@ -66,28 +66,56 @@ def _deep_get(data: Dict[str, Any], *keys, default=None):
     return node
 
 
+def _resolve_config_path(value: Any, config_dir: str) -> str:
+    """Resolve a path from YAML relative to the YAML file itself.
+
+    The command line and GUI can be launched from arbitrary working
+    directories.  Resolving relative paths against ``os.getcwd()`` makes a
+    config silently write cookies, state, or downloads somewhere else (and
+    is particularly surprising for password-login fallback).  Keep absolute
+    paths untouched while expanding ``~`` and anchoring relative values to
+    the config directory.
+    """
+    raw = os.path.expanduser(str(value))
+    if os.path.isabs(raw):
+        return os.path.normpath(raw)
+    return os.path.normpath(os.path.join(config_dir, raw))
+
+
 def load_config(path: str) -> AppConfig:
     """从 YAML 加载配置；文件不存在时使用默认值。"""
-    cfg = AppConfig(config_path=path)
-    if not os.path.exists(path):
+    # A config is a self-contained unit: all relative data paths are rooted
+    # beside it, independent of the process working directory.
+    config_path = os.path.abspath(os.path.expanduser(path))
+    config_dir = os.path.dirname(config_path)
+    cfg = AppConfig(config_path=config_path)
+    cfg.root_dir = _resolve_config_path(cfg.root_dir, config_dir)
+    cfg.state_db = _resolve_config_path(cfg.state_db, config_dir)
+    cfg.cookie_file = _resolve_config_path(cfg.cookie_file, config_dir)
+    if cfg.log_file:
+        cfg.log_file = _resolve_config_path(cfg.log_file, config_dir)
+    if not os.path.exists(config_path):
         return cfg
 
-    with open(path, "r", encoding="utf-8") as handle:
+    with open(config_path, "r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
 
     cfg.base_url = data.get("base_url", cfg.base_url).rstrip("/")
-    cfg.root_dir = os.path.expanduser(data.get("root_dir", cfg.root_dir))
-    cfg.state_db = os.path.expanduser(data.get("state_db", cfg.state_db))
+    cfg.root_dir = _resolve_config_path(data.get("root_dir", cfg.root_dir), config_dir)
+    cfg.state_db = _resolve_config_path(data.get("state_db", cfg.state_db), config_dir)
     log_file = data.get("log_file")
-    cfg.log_file = os.path.expanduser(log_file) if log_file else None
+    cfg.log_file = _resolve_config_path(log_file, config_dir) if log_file else None
 
     auth = data.get("auth") or {}
     cfg.auth_method = (auth.get("method") or "token").lower()
     cfg.token = auth.get("token") or ""
     cfg.uis_username = str(auth.get("uis_username") or "")
     # 兼容三种键名：auth.method_cookie_file（旧）/ auth.cookie_file / 顶层 cookie_file
-    cfg.cookie_file = (auth.get("method_cookie_file") or auth.get("cookie_file")
-                       or data.get("cookie_file") or "cookies.json")
+    cfg.cookie_file = _resolve_config_path(
+        auth.get("method_cookie_file") or auth.get("cookie_file")
+        or data.get("cookie_file") or "cookies.json",
+        config_dir,
+    )
     # 环境变量覆盖（便于 CI / 脚本注入，避免明文写在配置里）
     cfg.token = os.environ.get("FUDAN_ELEARNING_TOKEN", cfg.token)
 
