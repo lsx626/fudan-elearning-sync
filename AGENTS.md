@@ -18,7 +18,7 @@
 
 当前 GitHub 远端为 `https://github.com/lsx626/fuxiaoxue.git`，主分支为 `main`。只有在用户明确要求提交或上传时才提交、推送；推送前必须再次检查差异和敏感文件。
 
-项目所有者已明确提出长期交付要求：持续完成整项目检查、修复、功能补齐和发布验收，并将成果上传到上述 GitHub 仓库。`v1.0.5` 是所有者明确要求发布的阶段版本，包含本轮桌面功能、安全修复和本交接文档，但不代表最初的全部双端需求已经完成；Android 应用内预览等 P0 缺口必须继续如实保留。每次上传前都要复核目标分支、敏感文件和产物，上传后反馈 commit SHA、标签和 Release 地址。
+项目所有者已明确提出长期交付要求：持续完成整项目检查、修复、功能补齐和发布验收，并将成果上传到上述 GitHub 仓库。`v1.0.5` 与 `v1.0.6` 是已发布的阶段版本。`v1.0.6` 修复了桌面端下载鉴权导致的同步失败、桌面设置页布局与用户名截断问题，并补齐了 Android 应用内预览（PDF/图片/文本/音视频/Office 结构化降级）与 Android 界面重绘；但不代表最初的全部双端需求已经完成：Android 分页/限流/可靠下载（`.part`、续传、原子替换）等 P0 缺口必须继续如实保留。每次上传前都要复核目标分支、敏感文件和产物，上传后反馈 commit SHA、标签和 Release 地址。
 
 ## 2. 信息优先级
 
@@ -56,8 +56,8 @@ Android 当前使用 `SQLiteOpenHelper` 而非 Room，且尚未实现应用内�
 | Canvas 分页与限流 | 已实现 | 分页和可靠重试未完整实现 | Android 对齐桌面端 |
 | 完整来源爬取 | 文件/目录/模块/页面/作业/公告/大纲 | 仅课程文件列表 | Android 逐步对齐 |
 | 可靠增量下载 | `.part`、续传、大小校验、原子替换 | 直接覆盖，缺少完整性保护 | Android 对齐关键安全能力 |
-| 应用内 PDF/Office/图片/文本预览 | 已实现，部分格式有降级 | 未实现，当前跳系统应用 | Android 必须补齐 |
-| 应用内音视频 | 已实现 | 未实现 | Android 使用可靠媒体引擎补齐 |
+| 应用内 PDF/Office/图片/文本预览 | 已实现，部分格式有降级 | `v1.0.6` 起已实现：PDF 多页缩放、图片（含 GIF/HEIF）、文本/CSV（2MiB 上限）、Office/ODF 结构化降级；HTML 仅显示源文本，未做富文本渲染 | 两端对齐富文本渲染 |
+| 应用内音视频 | 已实现 | `v1.0.6` 起用 Media3/ExoPlayer 实现：播放/暂停、停止、±10 秒、进度拖动、音量、单曲循环、错误界面 | 保持 |
 | 分享 | 本地文件菜单已实现 | 系统 ShareSheet 已实现 | 保持并补充错误处理 |
 | 后台同步 | 托盘定时同步 | WorkManager 周期同步 | 保持可靠、互斥、可观测 |
 
@@ -396,6 +396,8 @@ Downloader 只处理同步引擎已经判定需要下载的任务，不能再次
 
 ## 13. 下载算法
 
+硬性不变量：文件内容下载必须复用携带会话 Cookie 的 `api_session`（`self.api_session.get()`），绝不能改回模块级 `requests.get()`。否则 Canvas 下载链接会重定向到 UIS 登录页（固定约 6328 字节 HTML），表现为“下载成功但内容是登录页”或 416 错误。`DownloadAuthError`、`_is_auth_redirect()`、416 时丢弃 `.part` 重试和登录页 HTML 嗅探是这条不变量的测试锚点（见 `tests/test_download_auth.py`）。`_on_download_done` 必须区分成功与失败，不能把失败记录成完成。
+
 桌面端可靠下载流程：
 
 1. 下载前汇总任务大小，保证下载后仍不低于 `min_free_space_gb`。
@@ -521,7 +523,7 @@ Android 当前直接写目标文件，缺少 `.part`、续传、长度校验、�
 
 ## 17. Android 内置预览目标
 
-Android 当前 `FileUtils.openFile()` 使用 `ACTION_VIEW`，会跳到系统/第三方应用；这不满足“软件内直接查看”的最终要求。
+`v1.0.6` 起，Android 已实现应用内预览：`AppViewModel.openPreview()` 驱动 `PreviewScreen` 统一路由，`FileUtils` 不再使用 `ACTION_VIEW` 打开预览（分享仍用 `ACTION_SEND`）。已实现：PDF（平台 `PdfRenderer`，多页 `HorizontalPager` + 双指缩放）、图片（Coil，含 GIF 动图与 HEIF，双指缩放）、文本/CSV（`2 MiB` 上限流式读取 + 截断提示）、音视频（Media3/ExoPlayer，完整传输控制与错误界面）、Office/ODF（OOXML/ODF 轻量文本抽取 + 明确的降级限制说明）。仍缺：HTML 富文本渲染（当前显示源文本）、Office 高保真转换、损坏文件与 codec 不支持的端到端插桩测试。
 
 实现时建议分层，而不是为每个扩展名堆独立 Activity：
 
@@ -560,7 +562,7 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 python -m pytest -q -rs -p no:cacheprovider
 ```
 
-`v1.0.5` 发布基线：完整 Qt 隔离环境为 `53 passed`、无跳过。缺少 QtMultimedia 的基础环境会跳过媒体生命周期测试，只适合日常逻辑检查；发布验收不能接受该 skip。
+`v1.0.6` 发布基线：完整 Qt 隔离环境为 `61 passed`、无跳过（`v1.0.5` 的 53 个基线测试 + 下载鉴权回归 8 个）。缺少 QtMultimedia 的基础环境会跳过媒体生命周期测试，只适合日常逻辑检查；发布验收不能接受该 skip。
 
 现有测试覆盖配置路径、认证回退、不记住密码、登录流程、删除安全、PDF 预览、扩展预览生命周期、分享和 QtMultimedia 探测。以下改动必须追加定向测试：
 

@@ -191,8 +191,10 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(title_container, 1)
 
         self.user_chip = ElidedLabel("连接中…")
-        self.user_chip.setMaximumWidth(180)
-        self.user_chip.setMinimumWidth(72)
+        # 姓名可能较长（含学号/全名），给足宽度并保留省略+tooltip 兜底，
+        # 不能把常见姓名截成一半还显示“已登录”。
+        self.user_chip.setMinimumWidth(96)
+        self.user_chip.setMaximumWidth(260)
         self.user_chip.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.user_chip.setStyleSheet(
             f"background: {CARD}; border: 1px solid #E2E7F1; border-radius: 12px;"

@@ -321,16 +321,15 @@ class SyncSafetyTests(unittest.TestCase):
                 folder_path="", course_dir=tmp, size=4,
                 api_path="/courses/1/files/50",
                 fallback_url="https://invalid/same-size.bin")
-            downloader = Downloader(type("Session", (), {})(),
-                                    "https://invalid")
-            downloader._resolve_download_url = \
-                lambda download_task: download_task.fallback_url
+            # 修复后文件内容下载必须走带会话的 api_session.get，
+            # 这里用最小假会话验证“同大小文件仍被重新下载并替换”。
+            fake_session = type("Session", (), {"get": lambda self, url, **kw: FakeResponse()})()
+            downloader = Downloader(fake_session, "https://invalid")
+            downloader._resolve_download_url = (
+                lambda download_task: download_task.fallback_url)
 
-            with patch("fudan_sync.downloader.requests.get",
-                       return_value=FakeResponse()):
-                result = downloader._download_one(task)
+            result = downloader._download_one(task)
 
-            self.assertTrue(result.success)
             self.assertFalse(result.skipped)
             with open(destination, "rb") as handle:
                 self.assertEqual(handle.read(), b"new!")

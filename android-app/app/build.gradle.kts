@@ -14,8 +14,8 @@ android {
         applicationId = "edu.fudan.elearning.sync"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.0.5"
+        versionCode = 7
+        versionName = "1.0.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -79,6 +79,12 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("androidx.documentfile:documentfile:1.0.1")
+
+    // 应用内预览：图片解码（含 GIF 动图）、Media3 音视频播放；PDF 使用平台 PdfRenderer
+        implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
+    implementation("androidx.media3:media3-common:1.4.1")
 
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")

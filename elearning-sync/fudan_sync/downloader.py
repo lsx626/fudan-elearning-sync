@@ -14,6 +14,15 @@ import requests
 from .utils import format_size
 
 
+class DownloadAuthError(RuntimeError):
+    """下载请求被重定向到 UIS 登录页：Canvas 会话已过期。"""
+
+
+def _is_auth_redirect(resp) -> bool:
+    """响应是否被重定向到 UIS 统一认证页（会话过期的可靠特征）。"""
+    return "id.fudan.edu.cn" in (getattr(resp, "url", "") or "")
+
+
 @dataclass
 class DownloadTask:
     file_id: int
@@ -30,6 +39,29 @@ class DownloadTask:
         rel = os.path.join(self.folder_path, self.filename) if self.folder_path \
             else self.filename
         return os.path.join(self.course_dir, *rel.split("/")) if rel else self.course_dir
+
+
+_HTML_EXTENSIONS = {".html", ".htm", ".xhtml"}
+
+
+def _is_html_target(task) -> bool:
+    """目标本身是 HTML 时不能把 HTML 开头当作异常。"""
+    ext = os.path.splitext(task.filename)[1].lower()
+    if ext in _HTML_EXTENSIONS:
+        return True
+    ctype = (task.content_type or "").lower() if hasattr(task, "content_type") else ""
+    return ctype.startswith("text/html")
+
+
+def _looks_like_auth_page(path: str) -> bool:
+    """读取开头字节，判断是否被误存为登录页 HTML。"""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(64)
+    except OSError:
+        return False
+    head = head.lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    return head.startswith(b"<!doctype html") or head.startswith(b"<html")
 
 
 class DownloadResult:
@@ -110,7 +142,8 @@ class Downloader:
                 continue
 
             offset = 0
-            headers = {}
+            # 覆盖会话默认的 Accept: application/json，文件下载要的是二进制流
+            headers = {"Accept": "*/*"}
             mode = "wb"
             if os.path.exists(tmp):  # 断点续传
                 offset = os.path.getsize(tmp)
@@ -121,8 +154,30 @@ class Downloader:
                     mode = "ab"
 
             try:
-                with requests.get(download_url, stream=True, headers=headers,
-                                  timeout=(15, 300), allow_redirects=True) as resp:
+                # 必须复用带 Canvas 会话的 api_session：模块级 requests.get
+                # 不携带 Cookie，文件下载链接会把请求重定向到 UIS 登录页，
+                # 拿回一段固定 6328 字节的 HTML 而不是文件内容。
+                with self.api_session.get(download_url, stream=True, headers=headers,
+                                          timeout=(15, 300), allow_redirects=True) as resp:
+                    # 416：续传区间越界（多半是上次把登录页等错误响应写进了
+                    # .part）。丢弃残留 .part 从零重试，否则会陷入永久 416。
+                    if resp.status_code == 416:
+                        resp.close()
+                        if os.path.exists(tmp):
+                            os.remove(tmp)
+                        result.error = "续传区间无效，已重置临时文件并重试"
+                        if attempt < self.max_retries and not self._stop.is_set():
+                            time.sleep(min(2 ** attempt, 20))
+                            continue
+                        return result
+
+                    # 会话过期：被重定向到 UIS 统一认证页，重试也只能拿到登录页。
+                    if _is_auth_redirect(resp):
+                        resp.close()
+                        if os.path.exists(tmp):
+                            os.remove(tmp)
+                        raise DownloadAuthError("Canvas 会话已过期，请重新登录")
+
                     # 服务器忽略了 Range 请求 -> 重新完整写入
                     if offset > 0 and resp.status_code == 200:
                         offset, mode = 0, "wb"
@@ -145,6 +200,10 @@ class Downloader:
                                 self.progress_callback(task, written,
                                                        expected or task.size or 0)
                     result.bytes = written
+            except DownloadAuthError:
+                # 会话过期：重试无意义，直接把明确的原因返回给上层
+                result.error = "Canvas 会话已过期，请重新登录后重试"
+                return result
             except (requests.RequestException, OSError) as exc:
                 result.error = f"{type(exc).__name__}: {exc}"
                 if attempt < self.max_retries and not self._stop.is_set():
@@ -155,6 +214,16 @@ class Downloader:
                                        task.filename, exc)
                     time.sleep(wait)
                 continue
+
+            # 登录页误存防护：会话过期时可能把认证页 HTML 当文件存下；
+            # 上一轮残留的 .part 续传也会让真实内容前面拼上一段登录页。
+            if not _is_html_target(task) and _looks_like_auth_page(tmp):
+                os.remove(tmp)
+                result.error = "下载到的是登录页而非文件内容（会话可能已过期）"
+                if attempt < self.max_retries and not self._stop.is_set():
+                    time.sleep(min(2 ** attempt, 20))
+                    continue
+                return result
 
             # 完整性校验：大小须匹配（未知时放行）
             if task.size > 0 and result.bytes != task.size:

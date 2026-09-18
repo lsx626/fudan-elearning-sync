@@ -12,6 +12,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import edu.fudan.elearning.sync.preview.PreviewScreen
 import edu.fudan.elearning.sync.ui.AppViewModel
 import edu.fudan.elearning.sync.ui.FuXiaoXueTheme
 import edu.fudan.elearning.sync.ui.HomeScreen
@@ -33,10 +34,26 @@ class MainActivity : ComponentActivity() {
             FuXiaoXueTheme {
                 val viewModel: AppViewModel = viewModel()
                 val loginState by viewModel.loginState.collectAsState()
-                when (val state = loginState) {
-                    is LoginState.LoggedIn -> HomeScreen(viewModel)
-                    else -> LoginScreen(state) { username, password, remember ->
-                        viewModel.login(username, password, remember)
+                val previewFile by viewModel.previewFile.collectAsState()
+
+                // 应用内预览为全屏覆盖层，独立于登录/主界面路由
+                val target = previewFile
+                if (target != null) {
+                    PreviewScreen(
+                        file = target,
+                        onBack = viewModel::closePreview,
+                        onShare = { file ->
+                            edu.fudan.elearning.sync.util.FileUtils.shareFile(
+                                applicationContext, file
+                            )
+                        }
+                    )
+                } else {
+                    when (val state = loginState) {
+                        is LoginState.LoggedIn -> HomeScreen(viewModel)
+                        else -> LoginScreen(state) { username, password, remember ->
+                            viewModel.login(username, password, remember)
+                        }
                     }
                 }
             }

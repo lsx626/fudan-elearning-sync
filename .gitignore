@@ -26,6 +26,7 @@ elearning-sync/vendor/
 
 # Android
 android-app/.gradle/
+android-app/.gradle-home/
 android-app/build/
 android-app/app/build/
 android-app/local.properties

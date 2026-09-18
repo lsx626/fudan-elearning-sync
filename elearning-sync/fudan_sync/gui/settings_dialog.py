@@ -7,7 +7,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFormLayout,
                                QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QMessageBox, QPushButton, QSpinBox, QVBoxLayout)
+                               QMessageBox, QPushButton, QScrollArea, QSizePolicy,
+                               QSpinBox, QVBoxLayout, QWidget)
 
 from ..config import load_config
 from ..password_login import clear_credentials
@@ -30,7 +31,8 @@ class SettingsDialog(QFrame):
         self.setWindowTitle("设置 · 复小学")
         self.setWindowIcon(app_icon())
         self.setObjectName("root")
-        self.setMinimumSize(560, 660)
+        self.setMinimumSize(600, 560)
+        self.resize(640, 720)
         self._build_ui()
         self._center()
 
@@ -42,17 +44,31 @@ class SettingsDialog(QFrame):
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 24, 28, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 内容区可滚动：窗口较矮或高 DPI 下也不会裁切掉分组与按钮
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        content.setObjectName("root")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(28, 24, 28, 20)
+        content_layout.setSpacing(16)
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
 
         title = QLabel("设置")
         title.setObjectName("titleLabel")
-        layout.addWidget(title)
+        content_layout.addWidget(title)
 
         # ---- 同步 ----
         sync_box = QGroupBox("同步")
         sync_form = QFormLayout(sync_box)
-        sync_form.setSpacing(10)
+        sync_form.setSpacing(12)
+        sync_form.setVerticalSpacing(12)
 
         self.root_edit = QLineEdit(self.cfg.root_dir)
         browse_button = QPushButton("浏览…")
@@ -91,12 +107,13 @@ class SettingsDialog(QFrame):
         self.empty_check.setChecked(bool(self.cfg.sync.skip_empty_courses))
         sync_form.addRow("", self.empty_check)
 
-        layout.addWidget(sync_box)
+        content_layout.addWidget(sync_box)
 
         # ---- 内容过滤 ----
         filter_box = QGroupBox("内容过滤")
         filter_form = QFormLayout(filter_box)
-        filter_form.setSpacing(10)
+        filter_form.setSpacing(12)
+        filter_form.setVerticalSpacing(12)
 
         self.installer_check = QCheckBox("不同步安装包（.exe / .msi / .apk 等）")
         self.installer_check.setChecked(bool(self.cfg.sync.download.exclude_installer_files))
@@ -109,7 +126,7 @@ class SettingsDialog(QFrame):
         self.exts_edit = QLineEdit(", ".join(self.cfg.sync.download.exclude_extensions))
         self.exts_edit.setPlaceholderText("留空表示不按扩展名过滤")
         filter_form.addRow("排除扩展名（逗号分隔）", self.exts_edit)
-        layout.addWidget(filter_box)
+        content_layout.addWidget(filter_box)
 
         # ---- 启动 ----
         startup_box = QGroupBox("启动")
@@ -117,7 +134,7 @@ class SettingsDialog(QFrame):
         self.autostart_check = QCheckBox("开机自动启动并后台同步")
         self.autostart_check.setChecked(autostart.is_autostart_enabled())
         startup_form.addRow("", self.autostart_check)
-        layout.addWidget(startup_box)
+        content_layout.addWidget(startup_box)
 
         # ---- 账号 ----
         account_box = QGroupBox("账号")
@@ -134,11 +151,12 @@ class SettingsDialog(QFrame):
         logout_button.setCursor(Qt.PointingHandCursor)
         logout_button.clicked.connect(self._on_logout)
         account_form.addRow("", logout_button)
-        layout.addWidget(account_box)
+        content_layout.addWidget(account_box)
 
-        layout.addStretch()
+        content_layout.addStretch()
 
         button_row = QHBoxLayout()
+        button_row.setContentsMargins(28, 0, 28, 16)
         button_row.addStretch()
         cancel_button = QPushButton("取消")
         cancel_button.setCursor(Qt.PointingHandCursor)

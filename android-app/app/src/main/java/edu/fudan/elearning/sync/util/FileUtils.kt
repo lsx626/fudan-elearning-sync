@@ -6,7 +6,7 @@ import androidx.core.content.FileProvider
 import edu.fudan.elearning.sync.data.FileItem
 import java.io.File
 
-/** 文件操作工具：打开预览、分享。 */
+/** 文件操作工具：分享与通用辅助。应用内预览由 PreviewScreen 统一路由。 */
 object FileUtils {
 
     fun fileUri(context: Context, path: String): android.net.Uri =
@@ -16,32 +16,18 @@ object FileUtils {
             File(path)
         )
 
-    /** 用系统默认应用打开文件（PDF/Word/Excel/PPT/图片等）。 */
-    fun openFile(context: Context, file: FileItem) {
-        if (file.localPath.isEmpty()) {
-            toast(context, "文件尚未下载，请先同步")
-            return
-        }
-        try {
-            val uri = fileUri(context, file.localPath)
-            val mime = guessMime(file.filename)
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, mime)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            context.startActivity(intent)
-        } catch (e: Exception) {
-            toast(context, "无法打开此文件：${e.message ?: "未知错误"}")
-        }
-    }
-
-    /** 分享文件（系统分享面板）。 */
+    /** 分享文件（系统分享面板）：只授予临时只读 URI 权限。 */
     fun shareFile(context: Context, file: FileItem) {
         if (file.localPath.isEmpty()) {
             toast(context, "文件尚未下载，请先同步")
             return
         }
         try {
+            val local = File(file.localPath)
+            if (!local.exists()) {
+                toast(context, "本地文件不存在，可能已被删除")
+                return
+            }
             val uri = fileUri(context, file.localPath)
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = guessMime(file.filename)
@@ -54,11 +40,27 @@ object FileUtils {
         }
     }
 
+    /** 分享本地文件（系统分享面板）：只授予临时只读 URI 权限。 */
+    fun shareFile(context: Context, file: File) {
+        try {
+            val uri = fileUri(context, file.absolutePath)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = guessMime(file.name)
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "分享文件"))
+        } catch (e: Exception) {
+            toast(context, "无法分享此文件：${e.message ?: "未知错误"}")
+        }
+    }
     /** 文件同步状态的中文描述。 */
     fun statusText(status: String): String = when (status) {
         "downloaded" -> "已下载"
         "pending" -> "待下载"
         "skipped" -> "已跳过"
+        "remote_missing" -> "远端已删除"
+        "failed" -> "下载失败"
         else -> status
     }
 

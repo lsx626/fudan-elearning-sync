@@ -383,7 +383,7 @@ class SyncEngine:
                     stats.files_failed += 1
                     stats.errors += 1
                     self.state.mark_failed(res.task.file_id, res.error)
-                    self._log("warning", "下载失败: %s -> %s", res.task.filename, res.error)
+                    # 失败日志已由 _on_download_done 统一输出，这里不再重复
         else:
             self._log("info", "课程 [%s] 无新增/变更文件（共 %d 个文件已是最新）",
                       course.name, stats.files_found)
@@ -417,10 +417,15 @@ class SyncEngine:
                       course.name, removed)
 
     def _on_download_done(self, res: DownloadResult, stats: SyncStats) -> None:
-        status = "跳过(已存在)" if res.skipped else "完成"
-        self._log("info", "  [%s] %s（%s）", status,
-                  os.path.basename(res.local_path or res.task.filename),
-                  format_size(res.bytes or res.task.size))
+        # 只有真正成功才报“完成”；失败统一由本回调显式标记，
+        # 避免像以前那样把失败也记成“[完成]”，掩盖真实下载失败。
+        name = os.path.basename(res.local_path or res.task.filename)
+        if res.success:
+            status = "跳过(已存在)" if res.skipped else "完成"
+            self._log("info", "  [%s] %s（%s）", status, name,
+                      format_size(res.bytes or res.task.size))
+        else:
+            self._log("warning", "  [失败] %s: %s", name, res.error or "未知错误")
         self._emit("file_done", {
             "file_id": res.task.file_id,
             "course_id": res.task.course_id,
@@ -429,6 +434,7 @@ class SyncEngine:
             "size": res.bytes or res.task.size,
             "skipped": res.skipped,
             "success": res.success,
+            "error": res.error or "",
         })
 
     # ------------------------------------------------------------------

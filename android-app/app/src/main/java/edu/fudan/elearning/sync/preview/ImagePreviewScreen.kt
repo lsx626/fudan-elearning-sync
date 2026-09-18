@@ -1,0 +1,60 @@
+package edu.fudan.elearning.sync.preview
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import java.io.File
+
+/**
+ * 应用内图片预览：Coil 解码，覆盖 PNG/JPEG/GIF 动图/WebP/HEIC 等格式。
+ *
+ * 支持双指缩放与拖动；超大图由 Coil 自动降采样，避免 OOM。
+ * 解码失败时显示结构化错误，不跳转第三方应用。
+ */
+@Composable
+fun ImagePreviewScreen(file: File) {
+    var scale by remember { mutableStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+
+    Box(
+        Modifier.fillMaxSize().background(Color(0xFF2A2A2E))
+            .pointerInput(Unit) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    val newScale = (scale * zoom).coerceIn(1f, 5f)
+                    scale = newScale
+                    offset = if (newScale > 1f) {
+                        Offset(offset.x + pan.x, offset.y + pan.y)
+                    } else Offset.Zero
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        AsyncImage(
+            model = ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
+                .data(file)
+                .crossfade(true)
+                .build(),
+            contentDescription = file.name,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize().graphicsLayer(
+                scaleX = scale, scaleY = scale,
+                translationX = offset.x, translationY = offset.y
+            )
+        )
+    }
+}

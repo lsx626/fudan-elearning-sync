@@ -12,7 +12,7 @@ import edu.fudan.elearning.sync.network.ApiClient
 import edu.fudan.elearning.sync.network.CanvasApi
 import edu.fudan.elearning.sync.sync.DownloadManager
 import edu.fudan.elearning.sync.sync.SyncEngine
-import edu.fudan.elearning.sync.sync.SyncResult
+import edu.fudan.elearning.sync.util.FileUtils
 import edu.fudan.elearning.sync.util.Prefs
 import edu.fudan.elearning.sync.util.SecurePrefs
 import edu.fudan.elearning.sync.worker.Notifier
@@ -29,7 +29,7 @@ sealed class LoginState {
     data class Error(val message: String) : LoginState()
 }
 
-/** 主界面 ViewModel：登录、同步、课程/文件数据。 */
+/** 主界面 ViewModel：登录、同步、课程/文件数据、应用内预览路由。 */
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
     private val repo = Repo(app)
@@ -47,6 +47,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _syncProgress = MutableStateFlow("")
     val syncProgress: StateFlow<String> = _syncProgress
+
+    /** 应用内预览目标文件（null 表示不在预览态）。 */
+    private val _previewFile = MutableStateFlow<java.io.File?>(null)
+    val previewFile: StateFlow<java.io.File?> = _previewFile
 
     val downloadRoot: String get() = downloader.rootPath()
 
@@ -110,6 +114,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         prefs.loggedIn = false
         _loginState.value = LoginState.LoggedOut
         _courses.value = emptyList()
+        _previewFile.value = null
     }
 
     /** 手动同步。 */
@@ -168,6 +173,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         repo.deleteFilesByCourse(courseId)
         refreshCourses()
+    }
+
+    /** 打开应用内预览（取代旧的 ACTION_VIEW 跳转）。 */
+    fun openPreview(file: FileItem) {
+        if (file.localPath.isEmpty()) {
+            toast("文件尚未下载，请先同步")
+            return
+        }
+        val local = java.io.File(file.localPath)
+        if (!local.exists() || !local.isFile) {
+            toast("本地文件不存在，可能尚未下载完成或已被删除")
+            return
+        }
+        _previewFile.value = local
+    }
+
+    /** 关闭应用内预览。 */
+    fun closePreview() {
+        _previewFile.value = null
+    }
+
+    /** 分享文件（系统分享面板，仅临时只读 URI 权限）。 */
+    fun shareFile(file: FileItem) {
+        FileUtils.shareFile(getApplication(), file)
+    }
+
+    private fun toast(message: String) {
+        android.widget.Toast.makeText(
+            getApplication(), message, android.widget.Toast.LENGTH_SHORT
+        ).show()
     }
 
     override fun onCleared() {
