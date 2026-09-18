@@ -231,11 +231,11 @@ class DocumentPreviewDialog(QDialog):
             pdf_doc = QPdfDocument(self)
             pdf_doc.load(self.file_path)
             pdf_view.setDocument(pdf_doc)
-            pdf_view.setPageMode(QPdfDocument.MultiPage)
+            pdf_view.setPageMode(QPdfView.PageMode.MultiPage)
             pdf_view.setZoomMode(QPdfView.FitToWidth)
             self._set_preview_widget(pdf_view)
-        except ImportError:
-            # QtPdf 模块不可用，降级为首页渲染
+        except Exception:
+            # QtPdf 模块不可用或渲染失败，降级为首页渲染
             self._load_pdf_fallback()
 
     def _load_pdf_fallback(self) -> None:

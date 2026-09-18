@@ -39,3 +39,6 @@ Thumbs.db
 release/
 
 *.spec
+
+# Android UI 测试截图
+android-app/screenshots/

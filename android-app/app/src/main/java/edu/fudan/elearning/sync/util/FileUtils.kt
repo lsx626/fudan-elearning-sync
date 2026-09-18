@@ -18,7 +18,10 @@ object FileUtils {
 
     /** 用系统默认应用打开文件（PDF/Word/Excel/PPT/图片等）。 */
     fun openFile(context: Context, file: FileItem) {
-        if (file.localPath.isEmpty()) return
+        if (file.localPath.isEmpty()) {
+            toast(context, "文件尚未下载，请先同步")
+            return
+        }
         try {
             val uri = fileUri(context, file.localPath)
             val mime = guessMime(file.filename)
@@ -27,13 +30,17 @@ object FileUtils {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startActivity(intent)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            toast(context, "无法打开此文件：${e.message ?: "未知错误"}")
         }
     }
 
     /** 分享文件（系统分享面板）。 */
     fun shareFile(context: Context, file: FileItem) {
-        if (file.localPath.isEmpty()) return
+        if (file.localPath.isEmpty()) {
+            toast(context, "文件尚未下载，请先同步")
+            return
+        }
         try {
             val uri = fileUri(context, file.localPath)
             val intent = Intent(Intent.ACTION_SEND).apply {
@@ -42,8 +49,22 @@ object FileUtils {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startActivity(Intent.createChooser(intent, "分享文件"))
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            toast(context, "无法分享此文件：${e.message ?: "未知错误"}")
         }
+    }
+
+    /** 文件同步状态的中文描述。 */
+    fun statusText(status: String): String = when (status) {
+        "downloaded" -> "已下载"
+        "pending" -> "待下载"
+        "skipped" -> "已跳过"
+        else -> status
+    }
+
+    /** 短暂提示。 */
+    private fun toast(context: Context, message: String) {
+        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
     }
 
     /** 依据扩展名推断 MIME 类型。 */

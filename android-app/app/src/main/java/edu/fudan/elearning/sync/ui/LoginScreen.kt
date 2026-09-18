@@ -1,6 +1,8 @@
 package edu.fudan.elearning.sync.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,6 +26,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -53,16 +57,21 @@ fun LoginScreen(
         ) {
             Spacer(Modifier.height(60.dp))
             Surface(
-                modifier = Modifier.size(88.dp),
+                modifier = Modifier.size(92.dp),
                 shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.primary
+                color = MaterialTheme.colorScheme.primary,
+                shadowElevation = 6.dp
             ) {
-                Column(
+                Box(
                     modifier = Modifier.fillMaxSize(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text("e", fontSize = 44.sp, color = MaterialTheme.colorScheme.onPrimary)
+                    Image(
+                        painter = painterResource(R.drawable.ic_school),
+                        contentDescription = "复小学",
+                        modifier = Modifier.size(52.dp),
+                        colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onPrimary)
+                    )
                 }
             }
             Spacer(Modifier.height(16.dp))
