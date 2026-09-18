@@ -612,11 +612,11 @@ Android 至少检查：
 
 ```powershell
 cd elearning-sync
-.\.venv\Scripts\python -m pytest -q
-.\.venv\Scripts\python -m PyInstaller --clean --noconfirm 复小学.spec
+.\.packaging-venv\Scripts\python -m pytest -q
+.\.packaging-venv\Scripts\python -m PyInstaller --noconfirm 复小学.spec
 ```
 
-产物是 `dist\复小学\复小学.exe`。spec 会显式收集 QtMultimedia、QtPdf、Office/ODF、Pillow/HEIF 和 PyMuPDF；缺少匹配的 QtMultimedia 时应立即失败。不要用仓库旧 `vendor/` 拼 DLL。
+产物是 `dist\复小学\复小学.exe`。spec 会显式收集 QtMultimedia、QtPdf、Office/ODF、Pillow/HEIF 和 PyMuPDF；缺少匹配的 QtMultimedia 时应立即失败。不要用仓库旧 `vendor/` 拼 DLL。首次准备 `.packaging-venv` 见 22.2；只有满足 22.7 的缓存失效条件才追加 `--clean`。
 
 再用 Inno Setup 6 编译 `installer/setup.iss`。`v1.0.5` 已验证的隔离构建基线约为 339.6 MiB、525 个文件，且不应混入 NumPy/MKL；该数字只是异常膨胀检测参考，不是固定验收值。安装器的固定 `AppId` 关系到覆盖升级，未经迁移设计不得修改。
 
@@ -626,7 +626,7 @@ cd elearning-sync
 - `elearning-sync/fudan_sync/__init__.py::__version__`
 - `elearning-sync/installer/setup.iss` 的 `MyAppVersion`
 - `OutputBaseFilename`
-- 根 README/桌面 README 中展示的版本
+- 根 README、桌面 README、`android-app/README.md` 中展示的版本
 - Android `versionName`，并严格递增 `versionCode`
 
 `v1.0.5` 起安装器不再使用 `[UninstallDelete]` 递归删除 AppData，卸载时默认保留配置、Cookie、数据库、日志和课程资料。`test_installer_safety.py` 防止该危险规则被重新引入。
@@ -667,7 +667,441 @@ cd android-app
 
 发布版目前未启用 minify。若启用 R8/ProGuard，必须增加并验证 Gson 模型、OkHttp、Compose 和反射相关规则。
 
-## 22. UI/UX 发布标准
+## 22. 快速打包、签名与 GitHub 发布 SOP
+
+本节用于“改动已经稳定，只需尽快产出并发布”的场景。深度审计、修复新缺陷和首次搭建环境不计入发布耗时。工具与缓存准备完成后，文档改动通常应在数分钟内完成推送；双端缓存构建应争取在 10-20 分钟内完成，而不是每次从零安装环境、重新下载工具或重复无关平台的测试。
+
+### 22.1 加速原则
+
+1. **先冻结候选代码，再打包。** 版本号、源码、安装器文案和会进入安装包的 `elearning-sync/README.md` 必须先定稿。打包后若又改了被打包内容，只重建受影响的平台和下游产物。
+2. **环境只准备一次。** 保留 `.packaging-venv`、Gradle 用户缓存、Android SDK、Inno Setup、Windows SDK SignTool 和 GitHub CLI；不要在每次发布时重装或临时下载。
+3. **默认使用增量缓存。** PyInstaller 默认不加 `--clean`，Gradle 默认不执行 `clean`。只有 22.7 列出的失效条件成立时才做干净重建。
+4. **两端并行。** 桌面测试/打包与 Android lint/构建互不依赖，应在两个终端或并行工具调用中同时运行。Inno Setup 必须等待桌面 dist 和桌面签名完成。
+5. **按改动范围验证。** 不改 Android 就不重复构建 Android；只改仓库文档就不生成任何二进制。版本发布同时提升双端版本时，两端都必须重建。
+6. **标签不可变。** 先验证产物，再创建新标签并原子推送。公开标签或 Release 有错误时发布新的补丁版本，禁止移动旧标签或静默替换公开资产。
+7. **凭据不进命令历史。** Android 密钥口令只在 `local.properties`；Windows 代码签名证书优先导入证书库后按指纹使用；GitHub 使用 `gh auth login` 的凭据存储。禁止把令牌、PFX 口令或 keystore 复制到脚本和发布说明。
+
+### 22.2 一次性准备
+
+本节命令统一要求 PowerShell 7.3+。PowerShell 7 能把 PyInstaller、Gradle、ISCC、SignTool、Git 和 `gh` 的非零退出码转换为终止错误，防止命令失败后继续签名或上传旧产物。每个并行发布终端都必须先运行：
+
+```powershell
+if ($PSVersionTable.PSVersion -lt [version]"7.3") {
+    throw "快速发布 SOP 要求 PowerShell 7.3+"
+}
+$ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $true
+```
+
+只在新机器或工具升级时安装 GitHub CLI 与 Inno Setup。系统有 `winget` 时执行：
+
+```powershell
+winget install --exact --id GitHub.cli
+winget install --exact --id JRSoftware.InnoSetup
+```
+
+没有 `winget` 时，从 GitHub CLI 官方 Releases 安装 MSI，并从 Inno Setup 官方下载页安装；不得使用来源不明的打包工具。安装完成后执行：
+
+```powershell
+gh auth login -h github.com -p https --web
+gh auth status
+```
+
+安装 Windows SDK，以获得 `signtool.exe`。正式发布 Python 环境只创建一次；当前机器可以复用被 `.gitignore` 排除的 `elearning-sync/.packaging-venv`：
+
+```powershell
+cd elearning-sync
+python -m venv .packaging-venv
+.\.packaging-venv\Scripts\python -m pip install -U pip
+.\.packaging-venv\Scripts\python -m pip install -r requirements.txt pytest pyinstaller
+.\.packaging-venv\Scripts\python -c "from PySide6.QtMultimedia import QMediaPlayer; from PySide6.QtPdf import QPdfDocument"
+```
+
+每个 PowerShell 会话只设置路径，不重新安装：
+
+```powershell
+$Repo = (Resolve-Path "<仓库根目录>").Path
+$Desktop = Join-Path $Repo "elearning-sync"
+$Android = Join-Path $Repo "android-app"
+$Repository = "lsx626/fuxiaoxue"
+$Python = Join-Path $Desktop ".packaging-venv\Scripts\python.exe"
+$Iscc = @(
+    (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+    (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
+    $(if (${env:ProgramFiles(x86)}) {
+        Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+    })
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+if (-not $Iscc) { throw "未找到 Inno Setup 6 的 ISCC.exe" }
+$SignTool = (Get-Command signtool.exe -ErrorAction SilentlyContinue).Source
+$env:JAVA_HOME = "<JDK 17 或 Android Studio jbr>"
+$env:GRADLE_USER_HOME = Join-Path $env:USERPROFILE ".gradle"
+```
+
+如果 `signtool.exe` 不在 PATH，获得可信 Windows 代码签名证书后再把 `$SignTool` 设置为本机 Windows SDK 中的实际路径；不要把本机绝对路径写入仓库。`android-app/local.properties` 必须提前配置 SDK 与既有发布密钥。包名已经公开后绝不能重新生成 Android keystore，否则旧用户无法升级；密钥必须离线备份。
+
+### 22.3 改动到重建范围的映射
+
+| 本次改动 | 桌面 pytest / PyInstaller | Inno 安装器 | Android lint / APK / AAB |
+|---|---|---|---|
+| 仅 `AGENTS.md`、根 `README.md` 或非打包文档 | 不需要 | 不需要 | 不需要 |
+| 仅 Release Notes | 不需要 | 不需要 | 不需要 |
+| `elearning-sync/README.md` 或 `installer/setup.iss` | 不需要重新生成 dist | 必须 | 不需要 |
+| 桌面 Python、requirements、spec 或 `build_assets` | 必须 | 必须 | 不需要 |
+| Android Kotlin、资源、Manifest 或 Gradle 配置 | 不需要 | 不需要 | 必须 |
+| 产品版本同时升级 | 必须 | 必须 | 必须，并递增 `versionCode` |
+| 签名证书或签名策略变化 | 重新签名；必要时重打包 | 必须重新编译/签名 | 重新构建并验证签名 |
+
+`build_assets/app.ico` 同时进入桌面 EXE 和安装器，因此修改它要重建两者。`elearning-sync/README.md` 被 `InfoBeforeFile` 收入安装器，修改它只需重编译安装器。任何不确定的生成物都视为失效，不要为了省几分钟发布无法证明来源的旧二进制。
+
+### 22.4 快速发布顺序
+
+下面以 `$Version = "1.0.6"` 为例。不要照抄旧版本号：
+
+#### A. 预检和版本冻结
+
+```powershell
+cd $Repo
+$Version = "1.0.6"
+$Tag = "v$Version"
+
+git fetch origin --prune --tags
+if ((git branch --show-current) -ne "main") { throw "必须从 main 分支发布" }
+$Origin = git remote get-url origin
+if ($Origin -notmatch 'github\.com[:/]lsx626/fuxiaoxue(?:\.git)?$') {
+    throw "origin 不是 lsx626/fuxiaoxue：$Origin"
+}
+git status --short
+git diff --check
+git log -1 --oneline
+git remote -v
+```
+
+一次性同步这些版本入口，然后再开始构建：
+
+- `elearning-sync/VERSION`
+- `elearning-sync/fudan_sync/__init__.py`
+- `elearning-sync/installer/setup.iss` 的版本和输出文件名
+- 根 README 的展示版本
+- `android-app/README.md` 的展示版本
+- Android `versionName`，并严格递增 `versionCode`
+
+用 `rg` 检查残留旧版本，不要靠肉眼逐个打开：
+
+```powershell
+rg -n "versionName|versionCode|MyAppVersion|OutputBaseFilename|__version__|当前版本" `
+  README.md android-app elearning-sync AGENTS.md
+```
+
+先提交候选源码，使构建来源有明确 commit。此时不要创建标签。下面的文件名只是示例，必须替换为本轮逐项审阅过的完整路径列表，禁止无审阅地执行 `git add -A`：
+
+```powershell
+git add -- AGENTS.md README.md
+git diff --cached --check
+git diff --cached --stat
+git commit -m "release: 发布复小学 v$Version"
+$ReleaseCommit = git rev-parse HEAD
+if (git status --porcelain) { throw "候选提交后工作区不干净" }
+```
+
+#### B. 并行验证
+
+如果 `requirements.txt` 相对上一发布版本发生变化，必须先同步打包环境；`PyInstaller --clean` 只清分析缓存，不会安装或升级依赖：
+
+```powershell
+& $Python -m pip install -r (Join-Path $Desktop "requirements.txt") pytest pyinstaller
+& $Python -m pip check
+```
+
+桌面发生变化时，在终端 A 运行：
+
+```powershell
+cd $Desktop
+$env:QT_QPA_PLATFORM = "offscreen"
+$env:PYTHONDONTWRITEBYTECODE = "1"
+& $Python -m pip check
+& $Python -c "from PySide6.QtMultimedia import QMediaPlayer; from PySide6.QtMultimediaWidgets import QVideoWidget; from PySide6.QtPdf import QPdfDocument"
+& $Python -m pytest -q -rs -p no:cacheprovider
+```
+
+Android 发生变化时，在终端 B 同时运行：
+
+```powershell
+cd $Android
+.\gradlew.bat lintDebug assembleRelease bundleRelease
+```
+
+只有连接了设备/模拟器且 Android 行为或 UI 有变化时追加：
+
+```powershell
+.\gradlew.bat connectedDebugAndroidTest
+```
+
+没有设备时必须在发布说明中写明未运行，不能伪造通过。若仅改文档，跳过 B-E，提交后只执行 `git push origin main`；不要创建新版本、标签或 Release。
+
+#### C. 增量构建 Windows
+
+```powershell
+cd $Desktop
+& $Python -m PyInstaller --noconfirm "复小学.spec"
+```
+
+不要默认加 `--clean`。PyInstaller 会根据源码和 spec 更新 `build/`，通常明显快于从零分析依赖。构建后核对体积、文件数和关键插件：
+
+```powershell
+$Dist = Join-Path $Desktop "dist\复小学"
+$Files = Get-ChildItem -LiteralPath $Dist -File -Recurse
+[pscustomobject]@{
+    Files = $Files.Count
+    MiB = [math]::Round((($Files | Measure-Object Length -Sum).Sum / 1MB), 1)
+}
+
+@(
+  "_internal\PySide6\Qt6Multimedia.dll",
+  "_internal\PySide6\Qt6Pdf.dll",
+  "_internal\PySide6\plugins\multimedia\ffmpegmediaplugin.dll"
+) | ForEach-Object {
+    if (-not (Test-Path (Join-Path $Dist $_))) { throw "打包缺少 $_" }
+}
+```
+
+用隔离的 AppData 做 8 秒启动烟测，避免污染真实用户数据。开始前先关闭所有正在运行的“复小学”实例；程序带有单实例保护，旧实例存在时新进程会立即退出，从而造成假失败。隔离目录位于已忽略的 `.packaging-runtime`，可留给排障；需要清理时必须先解析并确认目标仍位于该目录内：
+
+```powershell
+$SmokeRoot = Join-Path $Desktop ".packaging-runtime\smoke-$Version"
+New-Item -ItemType Directory -Force -Path $SmokeRoot | Out-Null
+$SmokeConfig = Join-Path $SmokeRoot "config.yaml"
+$OldAppData = $env:APPDATA
+$OldLocalAppData = $env:LOCALAPPDATA
+try {
+    $env:APPDATA = $SmokeRoot
+    $env:LOCALAPPDATA = $SmokeRoot
+    $Process = Start-Process `
+      -FilePath (Join-Path $Dist "复小学.exe") `
+      -ArgumentList "--config `"$SmokeConfig`"" `
+      -WorkingDirectory $SmokeRoot `
+      -PassThru
+    Start-Sleep -Seconds 8
+    if ($Process.HasExited) { throw "打包程序提前退出：$($Process.ExitCode)" }
+    Stop-Process -Id $Process.Id
+} finally {
+    $env:APPDATA = $OldAppData
+    $env:LOCALAPPDATA = $OldLocalAppData
+}
+```
+
+#### D. Windows 代码签名与安装器
+
+当前公开的 `v1.0.5` 没有 Authenticode 签名。获得可信代码签名证书后，先将 PFX 安全导入 `Cert:\CurrentUser\My`，后续只按证书指纹签名，不在命令中传明文密码：
+
+```powershell
+$CertThumbprint = "<代码签名证书 SHA-1 指纹>"
+$Timestamp = "http://timestamp.digicert.com"
+$AppExe = Join-Path $Dist "复小学.exe"
+$Setup = Join-Path $Desktop "installer\release\复小学-Setup-v$Version.exe"
+if (-not $SignTool) { throw "未找到 Windows SDK 的 signtool.exe" }
+
+& $SignTool sign /sha1 $CertThumbprint /s My /fd SHA256 /td SHA256 /tr $Timestamp $AppExe
+& $SignTool verify /pa /all /v $AppExe
+
+& $Iscc (Join-Path $Desktop "installer\setup.iss")
+
+& $SignTool sign /sha1 $CertThumbprint /s My /fd SHA256 /td SHA256 /tr $Timestamp $Setup
+& $SignTool verify /pa /all /v $Setup
+```
+
+顺序必须是“签桌面 EXE -> 编译 Inno -> 签安装器”；后续重建会使旧签名失效。没有 Windows 证书时直接编译安装器，然后检查并如实记录 `NotSigned`：
+
+```powershell
+& $Iscc (Join-Path $Desktop "installer\setup.iss")
+$Setup = Join-Path $Desktop "installer\release\复小学-Setup-v$Version.exe"
+Get-AuthenticodeSignature -LiteralPath $Setup | Format-List Status,StatusMessage
+```
+
+不得为了消除“未知发布者”提示使用自签名证书冒充公开可信签名。
+
+#### E. Android 签名验证与发布文件
+
+Gradle release 任务会读取 `local.properties` 并使用既有 keystore。构建日志成功不等于使用了正确的发布证书，必须再验证：
+
+```powershell
+$Apk = Join-Path $Android "app\build\outputs\apk\release\app-release.apk"
+$Aab = Join-Path $Android "app\build\outputs\bundle\release\app-release.aab"
+$ApkSigner = "<Android SDK>\build-tools\<版本>\apksigner.bat"
+$ExpectedCert = "1dc096a7647e931084dba2387487b6283f407c83b1feadb5b329cae70f1ef077"
+
+$VerifyApk = (& $ApkSigner verify --verbose --print-certs $Apk 2>&1) -join [Environment]::NewLine
+if ($LASTEXITCODE -ne 0 -or $VerifyApk -notmatch $ExpectedCert) {
+    throw "APK 未使用正式发布证书，禁止上传"
+}
+$VerifyApk
+
+$VerifyAab = (& "$env:JAVA_HOME\bin\jarsigner.exe" -verify -verbose -certs $Aab 2>&1) -join [Environment]::NewLine
+if ($LASTEXITCODE -ne 0) { throw "AAB 签名验证失败" }
+
+$AabCert = (& "$env:JAVA_HOME\bin\keytool.exe" -printcert -jarfile $Aab 2>&1) -join [Environment]::NewLine
+if ($LASTEXITCODE -ne 0 -or (($AabCert -replace ':', '') -notmatch $ExpectedCert)) {
+    throw "AAB 未使用正式发布证书，禁止上传"
+}
+```
+
+预期 APK 证书 SHA-256 为本文件第 21 节记录的指纹。若出现 debug 证书、指纹变化、`versionName` 错误或 `versionCode` 未递增，立即停止发布。既有包名绝不能用新 keystore 覆盖发布。
+
+将附件复制到被忽略的 `release/`，统一使用 ASCII 文件名，避免上传工具和 URL 编码问题：
+
+```powershell
+$ReleaseDir = Join-Path $Repo "release"
+New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
+$SetupArtifact = Join-Path $ReleaseDir "fuxiaoxue-Setup-v$Version.exe"
+$ApkArtifact = Join-Path $ReleaseDir "fuxiaoxue-v$Version.apk"
+$AabArtifact = Join-Path $ReleaseDir "fuxiaoxue-v$Version.aab"
+Copy-Item $Setup $SetupArtifact -Force
+Copy-Item $Apk $ApkArtifact -Force
+Copy-Item $Aab $AabArtifact -Force
+
+$Artifacts = @(
+    foreach ($Path in @($SetupArtifact, $ApkArtifact, $AabArtifact)) {
+        $File = Get-Item -LiteralPath $Path
+        [pscustomobject]@{
+            Name = $File.Name
+            Path = $File.FullName
+            Size = [int64]$File.Length
+            Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+        }
+    }
+)
+$Artifacts | Format-Table Name, Size, Sha256
+```
+
+把三个 SHA-256 写入 Release Notes。AAB 用于应用商店，不是用户直接安装包；面向用户的 Android 下载项是 APK。
+
+#### F. 标签、原子推送和 Release
+
+在标签前做最后一次轻量检查。若构建后只补了不进入安装包的 `AGENTS.md` 发布记录，可以追加一个文档提交；若改了 Python、Android、spec、资源或 `elearning-sync/README.md`，返回映射表重建对应产物。
+
+```powershell
+cd $Repo
+git status --short
+git diff --check
+git log -1 --oneline
+if (git status --porcelain) { throw "发布前工作区不干净" }
+if (git tag -l $Tag) { throw "标签 $Tag 已存在，禁止覆盖" }
+if ((git branch --show-current) -ne "main") { throw "必须从 main 分支发布" }
+
+$Head = git rev-parse HEAD
+git tag -a $Tag -m "复小学 $Tag"
+$TagCommit = git rev-list -n 1 $Tag
+if ($TagCommit -ne $Head) { throw "标签没有指向当前 HEAD" }
+
+git push --atomic origin `
+  "HEAD:refs/heads/main" `
+  "refs/tags/${Tag}:refs/tags/${Tag}"
+
+$RemoteMain = ((git ls-remote origin "refs/heads/main") -split '\s+')[0]
+$RemoteTag = ((git ls-remote origin "refs/tags/$Tag^{}") -split '\s+')[0]
+if ($RemoteMain -ne $Head -or $RemoteTag -ne $Head) {
+    throw "远端 main、标签和本地 HEAD 不一致"
+}
+```
+
+用 GitHub CLI 一次创建**草稿** Release 并上传三个附件。发布说明先写入本地忽略目录，例如 `.packaging-runtime/release-notes-v$Version.md`，严禁包含令牌、Cookie 或真实课程信息：
+
+```powershell
+$Notes = Join-Path $Desktop ".packaging-runtime\release-notes-v$Version.md"
+$ArtifactPaths = @($Artifacts | ForEach-Object Path)
+gh release create $Tag $ArtifactPaths `
+  --repo $Repository `
+  --title "复小学 $Tag" `
+  --notes-file $Notes `
+  --verify-tag `
+  --draft
+```
+
+对草稿执行机器校验；名称、数量、大小、上传状态、SHA-256 或草稿状态有任何不一致都会停止：
+
+```powershell
+$RemoteRelease = gh api "repos/$Repository/releases/tags/$Tag" | ConvertFrom-Json
+if (-not $RemoteRelease.draft -or $RemoteRelease.prerelease) {
+    throw "Release 必须仍为 draft 且不能是 prerelease"
+}
+if ($RemoteRelease.tag_name -ne $Tag) { throw "Release 标签不匹配" }
+if (@($RemoteRelease.assets).Count -ne $Artifacts.Count) {
+    throw "远端附件数量不匹配"
+}
+
+foreach ($Artifact in $Artifacts) {
+    $Matches = @($RemoteRelease.assets | Where-Object { $_.name -eq $Artifact.Name })
+    if ($Matches.Count -ne 1) { throw "附件缺失或重名：$($Artifact.Name)" }
+    $Remote = $Matches[0]
+    $ExpectedDigest = "sha256:$($Artifact.Sha256)"
+    if ($Remote.state -ne "uploaded" -or
+        [int64]$Remote.size -ne $Artifact.Size -or
+        [string]$Remote.digest -ne $ExpectedDigest) {
+        throw "附件校验失败：$($Artifact.Name)"
+    }
+}
+
+$RemoteRelease | Select-Object html_url, tag_name, draft, prerelease
+$RemoteRelease.assets | Select-Object name, size, state, digest
+```
+
+机器校验通过后，仍保持草稿，打开输出的 `html_url` 人工检查标题、说明和附件。确认无误后单独执行下面的公开命令；输入完整标签是最后一道防误触确认：
+
+```powershell
+$Confirmation = Read-Host "确认公开 $Tag；请输入完整标签"
+if ($Confirmation -cne $Tag) { throw "已取消公开" }
+gh release edit $Tag --repo $Repository --draft=false --latest
+
+$Published = gh api "repos/$Repository/releases/tags/$Tag" | ConvertFrom-Json
+if ($Published.draft -or $Published.prerelease) { throw "Release 公开状态异常" }
+$Published.html_url
+```
+
+必须确认远端 asset 的 `digest` 与本地 SHA-256 一致，再向用户报告完成。
+
+### 22.5 上传失败的快速恢复
+
+- Release 草稿已创建但缺少附件：不要重建或重打标签，确认本地 staging 文件仍与清单一致后用 `gh release upload $Tag <文件>` 续传，不要默认加 `--clobber`。
+- Release 草稿中存在错误的同名附件：先核对本地路径、大小和 SHA-256，再删除错误附件并重传；只有明确要替换草稿中的同名附件时才使用 `--clobber`。已经公开的附件错误应发布新的补丁版本。
+- 发布说明有误：使用 `gh release edit $Tag --notes-file $Notes`，不需要重新上传二进制。
+- 标签尚未推送且指错 commit：可在本地删除后重建；标签一旦推送或 Release 一旦公开，禁止移动，改发新的补丁版本。
+- `main` 已推送但 Release 创建失败：确认远端标签正确后直接重跑 `gh release create`。
+- 上传后 digest 不一致：先删除错误 asset，再从已验证的本地 staging 文件重传；不要从不明旧目录寻找同名产物。
+- 发现代码缺陷：停止发布；修复后只重跑受影响平台的测试、打包和签名。公开 Release 已有人下载时应发新补丁版本，不要静默替换。
+
+### 22.6 最短检查清单
+
+- [ ] 工作区只有预期改动，敏感文件和生成物仍被忽略。
+- [ ] 版本入口一致，Android `versionCode` 已递增。
+- [ ] 只运行改动范围要求的测试；双端任务已并行。
+- [ ] 构建来自已记录的 commit，构建后没有改动被打包源码。
+- [ ] Windows EXE/安装器和 Android APK 的签名状态已实际验证。
+- [ ] EXE 启动烟测通过，APK 包名/版本/证书指纹正确。
+- [ ] AAB 完整性与证书指纹验证通过。
+- [ ] SHA-256 已写入 Release Notes。
+- [ ] 注释标签和 `main` 已原子推送到同一目标 commit。
+- [ ] GitHub Release 非 draft、非 prerelease，三个附件状态为 uploaded 且远端 digest 匹配。
+- [ ] 发布说明准确写出未运行的测试、未签名状态和仍未实现的功能。
+
+### 22.7 必须干净重建的条件
+
+桌面端满足任一条件时使用：
+
+```powershell
+& $Python -m PyInstaller --clean --noconfirm "复小学.spec"
+```
+
+如果 `requirements.txt` 有变化，必须先按 22.4 B 同步 `.packaging-venv`，再执行干净构建；`--clean` 不能替代依赖安装。
+
+- Python、PyInstaller、PySide6/Qt 或其他打包依赖版本改变。
+- `requirements.txt`、spec 的 hiddenimports/datas/binaries 或 Qt 插件集合改变。
+- 从另一台机器、另一虚拟环境或不同架构生成正式包。
+- 上次构建被中断、`build/` 来源不明、插件缺失、体积异常或运行烟测失败。
+- 安全修复涉及动态导入/二进制依赖，增量分析无法充分证明完整性。
+
+Android 只有在 Gradle 缓存损坏、AGP/Kotlin/Gradle 大版本切换或增量结果明显异常时才运行 `.\gradlew.bat clean`。普通 Kotlin、资源和版本号变化让 Gradle 自己做增量构建。Inno Setup 本身编译很快且必须在 dist/签名变化后重跑，但编译器只安装一次。
+
+## 23. UI/UX 发布标准
 
 所有新增功能必须具备完整状态，而不是只有 happy path：
 
@@ -683,7 +1117,7 @@ cd android-app
 
 UI 改动完成后必须实际运行并截图检查关键尺寸；仅阅读代码不能证明按钮没有遮挡。
 
-## 23. 安全与隐私标准
+## 24. 安全与隐私标准
 
 - 只同步当前账户有权访问的内容，遵守学校和课程资料使用规则。
 - 不新增遥测、上传、外链分享或第三方分析，除非用户明确授权且有隐私说明。
@@ -697,7 +1131,7 @@ UI 改动完成后必须实际运行并截图检查关键尺寸；仅阅读代�
 
 当前 `password_login.py` 在找不到 CAS 回调时，会把 `authnEngine` HTML 前 200 字符拼进异常信息；该片段可能含跳转或认证上下文。修复前不要把此异常全文写入公开日志/Issue，后续应只保留 HTTP 状态和稳定错误码并补脱敏测试。
 
-## 24. 已知缺口和优先级
+## 25. 已知缺口和优先级
 
 ### v1.0.5 已解决的发布阻断
 
@@ -742,9 +1176,9 @@ UI 改动完成后必须实际运行并截图检查关键尺寸；仅阅读代�
 
 修复缺口时一次只解决清晰范围，先加测试再改行为，避免同时重写两端架构。
 
-## 25. 常见改动操作手册
+## 26. 常见改动操作手册
 
-### 25.1 新增一种桌面预览格式
+### 26.1 新增一种桌面预览格式
 
 1. 在 `_detect_type()` 增加扩展名、MIME 或魔数识别，处理扩展名冲突。
 2. 选择现有预览类别，确需新增时才增加 widget/loader。
@@ -753,7 +1187,7 @@ UI 改动完成后必须实际运行并截图检查关键尺寸；仅阅读代�
 5. 若打包时动态导入，更新 `复小学.spec` hiddenimports/datas/binaries。
 6. 增加合成文件测试、损坏文件测试、反复打开关闭测试和打包后人工验收。
 
-### 25.2 修改认证
+### 26.2 修改认证
 
 1. 对照 PC 与 Android 的请求字段、Cookie、跳转和 RSA 编码。
 2. 用 mock 响应覆盖正常、密码错误、验证码/协议变化、缺字段和超时。
@@ -761,7 +1195,7 @@ UI 改动完成后必须实际运行并截图检查关键尺寸；仅阅读代�
 4. 验证桌面四种认证方法和旧配置回退。
 5. 验证 Android 记住/不记住、自动登录、退出和 Worker。
 
-### 25.3 修改同步或删除逻辑
+### 26.3 修改同步或删除逻辑
 
 1. 先画清“发现成功”和“空结果”的区别。
 2. 保持 file ID 去重、路径安全和删除闸门。
@@ -769,14 +1203,14 @@ UI 改动完成后必须实际运行并截图检查关键尺寸；仅阅读代�
 4. 检查数据库状态和实际文件系统结果一致。
 5. 绝不使用真实课程目录做破坏性测试。
 
-### 25.4 修改数据库 schema
+### 26.4 修改数据库 schema
 
 1. 写出旧版本到新版本的显式迁移。
 2. 用包含真实形状但脱敏/合成的数据副本测试迁移。
 3. 测试中途失败不会半迁移或清空用户数据。
 4. 更新查询、模型、统计、备份/恢复说明和本文件。
 
-### 25.5 修改主界面
+### 26.5 修改主界面
 
 1. 保持网络/磁盘工作在线程或协程 IO 上。
 2. 补齐 loading/empty/error/disabled/busy 状态。
@@ -784,7 +1218,7 @@ UI 改动完成后必须实际运行并截图检查关键尺寸；仅阅读代�
 4. 实际截图检查，不以布局代码推断结果。
 5. 确保主要操作始终可见，尤其是“立即同步”。
 
-## 26. 完成定义
+## 27. 完成定义
 
 一项改动只有同时满足以下条件才算完成：
 
@@ -798,7 +1232,7 @@ UI 改动完成后必须实际运行并截图检查关键尺寸；仅阅读代�
 - `git diff --check` 通过，`git status --short` 中只有预期文件。
 - 用户要求上传时，提交信息准确、推送目标核对无误，并反馈 commit/分支/远端。
 
-## 27. 交接输出模板
+## 28. 交接输出模板
 
 后续 Codex 完成一轮工作时，应向用户简要报告：
 
