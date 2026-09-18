@@ -19,8 +19,8 @@ UI 风格、配色与应用图标保持一致。
 - Kotlin + Jetpack Compose（Material 3）
 - MVVM：`AppViewModel` + `StateFlow`
 - OkHttp + 自实现 Canvas API（与桌面端 `fudan_sync` 协议同源）
-- Room / SQLite 状态库（与桌面端 `sync_state.db` 结构一致）
-- WorkManager 后台同步 + 前台服务
+- `SQLiteOpenHelper` 本地状态库（与桌面端数据库相互独立、结构不同）
+- WorkManager 后台周期同步
 
 ## 项目结构
 
@@ -34,7 +34,7 @@ android-app/
 │       │   ├── App.kt                    # Application 入口
 │       │   ├── MainActivity.kt           # Compose 宿主
 │       │   ├── auth/UisAuthenticator.kt  # UIS 登录（RSA + id.fudan.edu.cn）
-│       │   ├── data/                     # Room 数据库、DAO、Repo
+│       │   ├── data/                     # SQLiteOpenHelper、模型与 Repo
 │       │   ├── network/                  # OkHttp、CanvasApi、CookieJar
 │       │   ├── sync/                     # 同步引擎、下载管理
 │       │   ├── ui/                       # LoginScreen / HomeScreen / Theme
@@ -45,16 +45,16 @@ android-app/
 │           ├── drawable-anydpi-v26/ic_launcher.xml  # 自适应图标
 │           ├── values/strings.xml               # app_name = 复小学
 │           └── values/themes.xml                # Theme.FuXiaoXue
-└── release.keystore                     # 签名（密码在 local.properties）
+└── release.keystore                     # 本机私有签名文件（不入库）
 ```
 
 ## 应用信息
 
 - **应用名称**：复小学
 - **包名**：`edu.fudan.elearning.sync`
-- **版本**：1.0.3（versionCode 4）
+- **版本**：1.0.5（versionCode 6）
 - **最低 Android 版本**：8.0（API 26）
-- **目标 Android 版本**：14（API 34）
+- **目标 Android 版本**：15（API 35）
 
 ## 开发环境搭建
 
@@ -72,8 +72,8 @@ cd android-app
 ./gradlew installRelease      # 安装到已连接设备
 ```
 
-> 签名密钥 `release.keystore` 在仓库内，密码通过 `local.properties` 的
-> `fudanSign.*` 配置；克隆后若未配置会自动回退 debug 签名，保证可独立构建。
+> 签名密钥 `release.keystore` 和密码配置都只保存在发布者本机，均不入库。
+> 克隆后若未配置会自动回退 debug 签名以便构建，但该产物不能公开发布。
 
 ## 与桌面端的统一
 
@@ -95,12 +95,15 @@ cd android-app
 | `INTERNET` | 访问 eLearning 平台 |
 | `ACCESS_NETWORK_STATE` | 检查网络状态 |
 | `POST_NOTIFICATIONS` | 下载 / 同步通知（Android 13+） |
-| `FOREGROUND_SERVICE` | 前台同步服务 |
-| `FOREGROUND_SERVICE_DATA_SYNC` | 数据同步前台服务类型 |
-| `RECEIVE_BOOT_COMPLETED` | 开机自启后台同步 |
-| `WAKE_LOCK` | 同步过程中设备不休眠 |
-| `READ_EXTERNAL_STORAGE` | 读取外部存储（兼容旧版） |
-| `WRITE_EXTERNAL_STORAGE` | 写入外部存储（兼容旧版） |
+| `WAKE_LOCK` | WorkManager 执行同步时保持任务运行 |
+| `FOREGROUND_SERVICE` | 预留声明；当前没有自定义前台 Service |
+| `FOREGROUND_SERVICE_DATA_SYNC` | 预留声明；当前没有数据同步前台 Service |
+| `RECEIVE_BOOT_COMPLETED` | 预留声明；当前没有自定义开机 Receiver |
+| `READ_EXTERNAL_STORAGE` | 旧系统兼容声明；应用专属下载目录不依赖此权限 |
+| `WRITE_EXTERNAL_STORAGE` | 旧系统兼容声明；应用专属下载目录不依赖此权限 |
+
+当前周期同步由 WorkManager 管理。未实现的前台 Service、开机 Receiver 和非必要
+存储权限属于待清理项，不能据此宣称应用已有前台服务或自定义开机自启能力。
 
 ## License
 

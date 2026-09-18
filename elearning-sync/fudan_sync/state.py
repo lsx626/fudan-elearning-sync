@@ -178,11 +178,12 @@ class StateStore:
                 elif (int(stored.get("size") or -1) != int(remote.get("size") or 0)
                       or stored.get("updated_at") != remote.get("updated_at")
                       or stored.get("modified_at") != remote.get("modified_at")
-                      or stored.get("filename") != remote.get("filename")):
+                      or stored.get("filename") != remote.get("filename")
+                      or stored.get("local_path") != remote.get("local_path")):
                     needs_download = True
                 # 本地文件丢失也需重下
                 local_path = stored.get("local_path")
-                if local_path and not os.path.exists(local_path):
+                if not local_path or not os.path.exists(local_path):
                     needs_download = True
 
             cur.execute(
@@ -233,9 +234,22 @@ class StateStore:
             cur.execute("UPDATE files SET status='failed', last_error=? WHERE file_id=?",
                         (error[:500], file_id))
 
+    @staticmethod
+    def _is_safe_prune_path(path: str, prune_root: str) -> bool:
+        """只允许清理指定课程目录内的文件，兼容旧库中的异常路径。"""
+        try:
+            root = os.path.realpath(os.path.abspath(prune_root))
+            candidate = os.path.realpath(os.path.abspath(path))
+            common = os.path.commonpath((root, candidate))
+        except (OSError, ValueError):
+            return False
+        return (os.path.normcase(common) == os.path.normcase(root)
+                and os.path.normcase(candidate) != os.path.normcase(root))
+
     def mark_missing_files(self, course_id: int, seen_file_ids: List[int],
-                           prune: bool = False) -> int:
-        """把本轮未见的文件标记为远端已删除；prune=True 时同时删除本地文件。"""
+                           prune: bool = False,
+                           prune_root: Optional[str] = None) -> int:
+        """标记远端已删除文件；只清理明确限定在 prune_root 内的副本。"""
         removed = 0
         placeholders = ",".join("?" * len(seen_file_ids)) if seen_file_ids else "0"
         cur = self.conn.execute(
@@ -256,12 +270,15 @@ class StateStore:
         if prune:
             for row in rows:
                 path = row.get("local_path")
-                if path and os.path.exists(path):
+                if path and os.path.exists(path) and prune_root and \
+                        self._is_safe_prune_path(path, prune_root):
                     try:
                         os.remove(path)
                     except OSError as exc:
                         if self.log:
                             self.log.warning("删除本地文件失败 %s: %s", path, exc)
+                elif path and os.path.exists(path) and self.log:
+                    self.log.warning("跳过课程目录外的本地文件清理: %s", path)
         return removed
 
     def list_files_by_course(self, course_id: int) -> List[Dict[str, Any]]:

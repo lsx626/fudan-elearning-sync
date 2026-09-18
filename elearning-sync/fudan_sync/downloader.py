@@ -96,12 +96,6 @@ class Downloader:
         dest = task.dest_path
         os.makedirs(os.path.dirname(dest), exist_ok=True)
 
-        # 已存在且大小一致 -> 跳过
-        if os.path.exists(dest) and task.size > 0 and os.path.getsize(dest) == task.size:
-            result.success, result.skipped = True, True
-            result.local_path, result.bytes = dest, task.size
-            return result
-
         tmp = f"{dest}.part"
         attempt = 0
         while attempt < self.max_retries and not self._stop.is_set():

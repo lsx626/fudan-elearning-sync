@@ -1,0 +1,811 @@
+# 复小学项目开发与交接规范
+
+> 本文件是仓库级开发说明，也是后续 Codex/开发者接手本项目时的首要入口。
+> 它同时记录当前实现、目标状态、不可破坏的行为约束、验证方法和已知缺口。
+> 初始审计基线：2026-09-18，版本 `1.0.4`，提交 `8dc75bd9f92344bc0305c9a3ae90098e0dfff831`；其后的首个发布目标为 `1.0.5`。
+> 代码继续变化时，应在同一次改动中同步更新本文件；不要把历史快照当成永远正确的事实。
+
+## 1. 新会话接手顺序
+
+新 Codex 或新开发者开始工作时，按以下顺序建立上下文：
+
+1. 完整阅读本文件，再读根目录 `README.md`、相关子项目 README 和本次任务涉及的源码。
+2. 执行 `git status --short`、`git log -1 --oneline`、`git remote -v`，确认分支、工作区和远端；已有未提交改动一律视为用户工作，不得覆盖、回滚或清理。
+3. 读取 `elearning-sync/VERSION` 和 `android-app/app/build.gradle.kts`，确认实际版本。源码与 README 冲突时，以构建文件和实现为准，并修正文档。
+4. 根据改动范围先运行最小测试，修改后再运行完整相关测试。不要用“能启动”替代回归测试。
+5. 不读取、不展示、不提交任何真实凭据、Cookie、课程资料、数据库或签名密钥。
+6. 发现现状与本文件不符时，先以源码和测试验证，再在同一变更中更新本文件。
+
+当前 GitHub 远端为 `https://github.com/lsx626/fuxiaoxue.git`，主分支为 `main`。只有在用户明确要求提交或上传时才提交、推送；推送前必须再次检查差异和敏感文件。
+
+项目所有者已明确提出长期交付要求：持续完成整项目检查、修复、功能补齐和发布验收，并将成果上传到上述 GitHub 仓库。`v1.0.5` 是所有者明确要求发布的阶段版本，包含本轮桌面功能、安全修复和本交接文档，但不代表最初的全部双端需求已经完成；Android 应用内预览等 P0 缺口必须继续如实保留。每次上传前都要复核目标分支、敏感文件和产物，上传后反馈 commit SHA、标签和 Release 地址。
+
+## 2. 信息优先级
+
+发生冲突时按以下优先级判断：
+
+1. 用户当前明确要求。
+2. 可执行源码、构建脚本和自动化测试。
+3. 本文件中标记为“硬性不变量”的约束。
+4. 本文件的当前实现说明。
+5. 根 README 与子项目 README。
+
+Android 当前使用 `SQLiteOpenHelper` 而非 Room，且尚未实现应用内文档预览和媒体播放器。文档或实现发生冲突时必须重新核对源码，不得把目标能力写成已经完成。
+
+## 3. 产品目标与不可回退能力
+
+产品名是“复小学”，用于同步并管理用户有权访问的复旦大学 eLearning/Canvas 课程资料。目标发布形态是 Windows 桌面程序和 Android 应用。
+
+最终产品要求：
+
+- 支持 UIS 账号密码登录，并安全保存用户选择记住的凭据；桌面端还支持 Token、Cookie 和 Playwright 浏览器登录。
+- 定时进行增量同步，允许手动“立即同步”和全量同步，明确展示进度、结果和错误。
+- 采集课程文件，以及模块、页面、作业、公告、大纲中的文件引用；桌面端还归档正文。
+- PDF、Word、Excel、PowerPoint、ODF、常见图片、文本、音频和视频必须在软件内部直接查看，不自动跳转第三方应用；无法高保真时也应在应用内显示结构化降级内容和限制说明。
+- 音视频播放器至少具备播放/暂停、停止、前后跳转、可拖动进度、音量和单曲循环。
+- 分享至少具备安全地分享本地文件；桌面端还提供复制文件、另存副本、复制路径和文件夹定位。
+- UI 必须达到可发布质量：主流程完整，状态明确，窄窗口和长文本不遮挡按钮，键盘/触控可用，错误可恢复。
+- 用户本地资料和凭据默认保留且不外传；网络或权限失败绝不能被误判为远端删除。
+
+### 3.1 当前能力矩阵
+
+| 能力 | Windows/Python 当前状态 | Android 当前状态 | 目标 |
+|---|---|---|---|
+| UIS 登录 | 已实现 | 已实现 | 两端协议保持一致 |
+| Token/Cookie/浏览器登录 | 已实现 | 未实现，非当前必需 | 桌面端保持 |
+| Canvas 分页与限流 | 已实现 | 分页和可靠重试未完整实现 | Android 对齐桌面端 |
+| 完整来源爬取 | 文件/目录/模块/页面/作业/公告/大纲 | 仅课程文件列表 | Android 逐步对齐 |
+| 可靠增量下载 | `.part`、续传、大小校验、原子替换 | 直接覆盖，缺少完整性保护 | Android 对齐关键安全能力 |
+| 应用内 PDF/Office/图片/文本预览 | 已实现，部分格式有降级 | 未实现，当前跳系统应用 | Android 必须补齐 |
+| 应用内音视频 | 已实现 | 未实现 | Android 使用可靠媒体引擎补齐 |
+| 分享 | 本地文件菜单已实现 | 系统 ShareSheet 已实现 | 保持并补充错误处理 |
+| 后台同步 | 托盘定时同步 | WorkManager 周期同步 | 保持可靠、互斥、可观测 |
+
+任何发布说明都必须按“当前状态”描述，不能把目标能力写成已经完成。
+
+## 4. 仓库地图和所有权边界
+
+```text
+.
+├── AGENTS.md                         本开发交接规范
+├── README.md                         产品级说明
+├── elearning-sync/                   Python 3.10+ 桌面端与 CLI
+│   ├── gui.py                        GUI 入口、单实例、启动配置
+│   ├── sync.py                       CLI 入口
+│   ├── VERSION                       桌面版本号
+│   ├── requirements.txt              桌面依赖
+│   ├── 复小学.spec                   唯一正式 PyInstaller 配方
+│   ├── installer/setup.iss           Inno Setup 安装器
+│   ├── fudan_sync/                   同步核心
+│   │   ├── auth.py                   Token/Cookie/浏览器认证
+│   │   ├── password_login.py         UIS 密码认证
+│   │   ├── canvas_api.py             Canvas API、分页、限流
+│   │   ├── crawler.py                课程内容发现
+│   │   ├── downloader.py             并发、续传、原子下载
+│   │   ├── state.py                  SQLite 状态库
+│   │   ├── sync_engine.py            同步编排与删除保护
+│   │   ├── daemon.py                 定时守护循环
+│   │   └── gui/                      PySide6 界面层
+│   └── tests/                        桌面自动化测试
+└── android-app/                      Kotlin/Jetpack Compose Android 端
+    ├── app/build.gradle.kts          Android SDK、依赖、版本和签名配置
+    ├── gradle/wrapper/               Gradle Wrapper
+    └── app/src/
+        ├── main/java/edu/fudan/elearning/sync/
+        │   ├── auth/                 UIS 认证
+        │   ├── network/              OkHttp 与 Canvas API
+        │   ├── data/                 SQLiteOpenHelper、模型和仓库
+        │   ├── sync/                 同步与下载
+        │   ├── worker/               WorkManager 与通知
+        │   ├── util/                 偏好、安全存储、文件 Intent
+        │   └── ui/                   Compose UI 与 ViewModel
+        └── androidTest/              设备/模拟器插桩测试
+```
+
+两端共享业务协议和产品语义，但不共享 Cookie、密码、SQLite 文件或本地绝对路径。PC 的 `sync_state.db` 与 Android 的 `fudan_sync.db` 结构不兼容，绝不能互相复制或宣称“结构一致”。
+
+## 5. 开发环境
+
+### 5.1 Windows/Python 桌面端
+
+最低基线：
+
+- Python 3.10+；审计过 Python 3.13.9。
+- Windows 是主要发布平台；源码也保留 macOS/Linux 分支，但发布验收以 Windows 为准。
+- PySide6 与 `PySide6-Addons` 必须来自同一发行源、同一版本的完整 wheel。
+- 推荐独立 CPython venv。不要把 conda Qt、pip Qt、仓库旧 `vendor/` 和手工复制 DLL 混在一起。
+- 浏览器登录可选安装 Playwright Chromium。
+- Office 高保真预览可使用 Microsoft Office COM 或 LibreOffice；没有时走结构化解析降级。
+- 音视频实际可播放范围还取决于 Qt/系统媒体后端和编解码器。
+- Windows 安装器需要外部安装 Inno Setup 6；仓库不内置可依赖的编译器。
+
+PowerShell 建议流程：
+
+```powershell
+cd elearning-sync
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -U pip
+.\.venv\Scripts\python -m pip install -r requirements.txt pytest pyinstaller
+.\.venv\Scripts\python -m playwright install chromium  # 仅浏览器登录需要
+.\.venv\Scripts\python gui.py
+```
+
+发布环境导入探针：
+
+```powershell
+.\.venv\Scripts\python -c "from PySide6.QtMultimedia import QMediaPlayer; from PySide6.QtMultimediaWidgets import QVideoWidget; from PySide6.QtPdf import QPdfDocument"
+```
+
+硬性要求：`fudan_sync/bootstrap.py` 只做能力探测，不允许通过修改 `PATH`、`QT_PLUGIN_PATH` 或拼接旧 DLL“修复”Qt。若导入失败，应重建干净环境并安装匹配依赖。
+
+### 5.2 Android
+
+构建基线：
+
+- 单模块 `:app`，包名/namespace 为 `edu.fudan.elearning.sync`。
+- Gradle Wrapper 8.13，Android Gradle Plugin 8.13.0。
+- Kotlin 与 Compose 插件 2.1.0，Compose BOM 2025.01.00。
+- JDK 17 为最低和首选基线；Java/Kotlin 目标均为 17。
+- `compileSdk=36`，`targetSdk=35`，`minSdk=26`（Android 8.0+）。
+- 依赖仓库先用阿里云镜像，再回退 Google/Maven Central/Gradle Plugin Portal。
+
+`local.properties` 示例只允许在本机使用：
+
+```properties
+sdk.dir=<Android SDK 绝对路径>
+fudanSign.storeFile=../release.keystore
+fudanSign.storePassword=<secret>
+fudanSign.keyAlias=fudansync
+fudanSign.keyPassword=<secret>
+```
+
+不得把真实路径、口令或密钥提交到 Git。
+
+### 5.3 外部服务与网络
+
+- eLearning：`https://elearning.fudan.edu.cn`
+- UIS：`https://id.fudan.edu.cn`
+- Canvas 接口：`<base_url>/api/v1`
+
+测试真实登录前确认任务确实需要外部网络和真实账户。常规单元测试应使用 mock/fake，不应访问学校服务，也不应把真实响应存成测试夹具。
+
+## 6. 配置、路径和本地数据
+
+### 6.1 桌面端配置
+
+配置模型位于 `fudan_sync/config.py`，示例见 `config.example.yaml`。关键项包括：
+
+- `base_url`
+- `auth.method/token/username/method_cookie_file`
+- `root_dir/state_db/log_file`
+- `sync.interval_minutes/only_favorites/enrollment_type`
+- `sync.include_courses/exclude_courses/include_terms`
+- `sync.download.concurrency/max_retries/max_file_size_mb/min_free_space_gb/exclude_extensions`
+- `sync.prune/archive_pages`
+
+硬性不变量：配置中 `root_dir`、`state_db`、`log_file`、Cookie 路径的相对值，永远相对于该 `config.yaml` 所在目录解析，不得改为相对进程当前目录。快捷方式、托盘、自启和 `--config` 都依赖这一规则。
+
+GUI 路径策略位于 `gui/paths.py`：
+
+1. 若可执行文件/项目目录或当前目录已有 `config.yaml`，进入便携模式并复用它。
+2. 否则先复用非空的旧目录 `%APPDATA%\fudan-elearning-sync`。
+3. 再使用 `%APPDATA%\复小学`。
+4. 默认下载目录为用户文档目录下的 `elearning_files`，但会优先复用已有课程目录。
+
+CLI 默认使用当前目录的 `config.yaml`，GUI 可能使用用户数据目录配置。排障时必须先确认两者是否指向同一文件，必要时显式传 `--config`。
+
+`gui/config_io.py::update_config()` 采用局部合并并保留未知字段；不要用重建整个 YAML 的方式丢弃未来字段。
+
+### 6.2 Android 数据
+
+- 普通设置：应用私有 `SharedPreferences("fudan_sync")`。
+- 密码：Android Keystore + AES-256-GCM 加密后存私有偏好。
+- 数据库：应用私有 `fudan_sync.db`，当前 schema 版本 1。
+- 下载：应用专属外部目录 `<external-files>/elearning/`，卸载应用时通常由系统删除。
+
+当前 `onUpgrade()` 会删表重建。发布后任何 schema 变更必须改为显式、可回滚思考过的非破坏性迁移，并补迁移测试。
+
+### 6.3 敏感文件和生成物
+
+除非用户明确要求对某个脱敏测试文件进行处理，否则不要读取、展示或提交以下敏感内容：
+
+- `cookies.json`、`*.cookie.json`
+- `elearning-sync/config.yaml`
+- `elearning-sync/cookies.json`
+- `elearning-sync/sync_state.db` 及 `-wal`/`-shm`
+- `elearning-sync/elearning_files/`
+- `sync.log`、`gui_state.json`、下载中的 `*.part`
+- `android-app/local.properties`
+- `android-app/release.keystore`
+- `FUDAN_ELEARNING_TOKEN`、`FUDAN_UIS_PASSWORD` 等环境变量值
+- 真实日志中可能包含的认证 URL、课程名或个人信息
+
+`vendor/`、`build/`、`dist/`、APK/AAB、安装包等生成物不得提交，也不得被当成源码或运行时依赖；但在明确的构建/发布验收中可以只读检查其文件清单、DLL、签名、体积和运行行为。
+
+提交前至少运行 `git status --short` 和 `git diff --check`，并确认 `.gitignore` 仍覆盖上述内容。
+
+## 7. 桌面端架构
+
+### 7.1 入口与生命周期
+
+GUI 入口 `elearning-sync/gui.py::main()`：
+
+- 先执行无副作用的 QtMultimedia 能力探测。
+- 用 `QLocalServer/QLocalSocket` 保证单实例；二次启动只唤醒已有主窗口。
+- `QApplication.setQuitOnLastWindowClosed(False)`；点击主窗口关闭按钮默认隐藏到托盘。
+- 只有 `MainWindow._quit()` 才是真正退出路径。
+- 参数为 `python gui.py [--minimized] [--config PATH]`。
+
+CLI 入口 `sync.py` 支持：
+
+```powershell
+python sync.py login --method password
+python sync.py login --method token
+python sync.py login --method cookie
+python sync.py login --method browser
+python sync.py courses
+python sync.py sync
+python sync.py sync --full
+python sync.py sync --courses 12345 67890
+python sync.py daemon --interval 15
+python sync.py daemon --single
+python sync.py status --courses
+python sync.py files --course 12345
+```
+
+守护进程收到 SIGINT/SIGTERM 后协作式停止；不要用线程强杀代替清理。
+
+### 7.2 数据流
+
+```text
+load_config
+  -> build_auth
+  -> CanvasAPI
+  -> SyncEngine.discover_courses
+  -> Crawler.crawl_course
+  -> StateStore.upsert_file / 增量判定
+  -> Downloader.download_many
+  -> StateStore.mark_downloaded / mark_failed
+  -> 页面归档与 SyncStats
+```
+
+GUI 数据流：
+
+```text
+MainWindow
+  -> LoginWorker / SilentLoginWorker (QThread)
+  -> SyncWorker (QThread)
+  -> SyncEngine
+  -> Qt Signal
+  -> 主线程更新界面
+```
+
+登录、网络、同步、Office 转换不得阻塞 Qt 主线程。工作线程不得直接操作 QWidget。
+
+## 8. Android 架构
+
+主要职责：
+
+- `App.kt`：Application，创建通知渠道。
+- `MainActivity.kt`：Compose 宿主、通知权限、登录/主页路由。
+- `auth/UisAuthenticator.kt`：UIS/RSA/CAS 登录。
+- `network/ApiClient.kt`：OkHttp 会话；`CanvasApi.kt`：课程/文件接口。
+- `data/DatabaseHelper.kt`：SQLiteOpenHelper；`Repo.kt`：CRUD 与统计。
+- `sync/SyncEngine.kt`：课程发现、增量判定、下载和落库。
+- `sync/DownloadManager.kt`：应用专属目录和流式下载。
+- `worker/SyncWorker.kt`：WorkManager 周期/单次同步。
+- `ui/AppViewModel.kt`：MVVM 状态编排；`LoginScreen`/`HomeScreen`：Compose UI。
+
+保持 `AppViewModel + StateFlow` 的主结构，但数据库、网络和文件 I/O 必须明确切到 IO dispatcher。业务异常需要显式错误状态，不能把空列表或 `Result.success()` 当作所有失败的统一结果。
+
+WorkManager 周期任务名为 `fudan_sync_periodic_work`，使用 `ExistingPeriodicWorkPolicy.UPDATE`，最短周期 15 分钟且要求联网。当前只有成功交互登录后会安排任务；未保存密码时后台任务会直接退出。
+
+## 9. UIS 认证算法与安全要求
+
+PC 和 Android 必须保持同一协议契约：
+
+1. 访问 eLearning `/login`，从跳转后的 URL 获取 `lck` 和 `entityId`。
+2. 调用 `/idp/authn/queryAuthMethods`，选择 `userAndPwd` 认证链。
+3. 调用 `/idp/authn/getJsPublicKey`，取得 Base64 DER RSA 公钥。
+4. 使用 RSA PKCS#1 v1.5 加密 UTF-8 密码，再 Base64 编码。
+5. 调用 `/idp/authn/authExecute`，取得 `loginToken`。
+6. 表单提交 `/idp/authCenter/authnEngine`，解析 `locationValue` 并完成 CAS ticket 回跳。
+7. 访问 eLearning 首页验证 Canvas 会话并提取 CSRF token。
+
+桌面端接受 `_normandy_session` 或 `_canvas_session`；Android 当前只接受 `_normandy_session`，后续应对齐。认证协议变化时必须同时检查两端，不能只修一个客户端。
+
+安全红线：
+
+- 禁止记录或展示密码、Cookie、CSRF、`loginToken`、Token、签名口令、公钥响应全文或完整认证响应。
+- 桌面明文密码只允许短暂存在内存，并只在用户选择时写入系统钥匙串；服务名为 `fudan-elearning-sync`。
+- Android 只在用户选择记住密码时，用 Keystore 保护的 AES-GCM 落盘。
+- Cookie 文件写入后，桌面端应在 Windows 尝试收紧 ACL，在 POSIX 设为 0600。
+- OkHttp/requests 响应必须及时关闭；Android 使用 `Response.use`。
+
+桌面认证回退规则是兼容旧配置的硬性行为：
+
+- token 为空但钥匙串有该用户名密码时，切换为 password 并持久化。
+- password 模式没有钥匙串密码但 Cookie 可用时，切换为 cookie 并持久化。
+- GUI“不记住密码”仍可保存会话 Cookie，但不得写钥匙串；后续必须走 cookie，而不是回到空 password/token。
+
+## 10. Canvas API、分页和限流
+
+桌面 `CanvasAPI` 的约束：
+
+- 元数据 API 严格低频串行；仅文件内容下载可以并发。
+- 默认最小请求间隔 0.15 秒。
+- 网络异常和 5xx 指数退避，最长约 30 秒。
+- 429 或含 `Rate Limit Exceeded` 的 403 尊重 `Retry-After`，缺省约 8 秒。
+- `X-Rate-Limit-Remaining < 15` 时主动减速。
+- 分页必须原样跟随响应 `Link` 中的 `rel=next`；该 URL 是不透明值，不得自行重建页码或 bookmark。
+- 只有第一页附初始 params，后续 next URL 已包含全部参数。
+
+Android 当前没有完整实现上述分页、退避和限流策略，最多请求 100 门课程和每课 200 个文件。这是可靠性缺口，改造时应抽取可测试的分页循环和错误类型，而不是把异常转成空列表。
+
+## 11. 课程发现和爬取算法
+
+桌面端一般课程列表由 Canvas API 应用 enrollment role，再由引擎应用课程 ID 白名单、课程 ID 黑名单和学期名称子串过滤，最后写入课程表。`only_favorites=true` 时当前直接调用收藏接口，该请求没有传 `enrollment_type`，因此收藏模式下并未额外执行角色过滤；不要把两种模式描述成完全相同，后续应补显式本地角色校验或说明产品语义。
+
+`Crawler.crawl_course()` 的发现顺序：
+
+1. folders：建立 `folder_id -> 相对路径` 映射，递归时用 seen 防环。
+2. files：课程文件主列表。
+3. modules：模块附件。
+4. pages、assignments、announcements、syllabus：正文和引用文件。
+
+文件以 Canvas `file_id` 去重。第一次发现保留权威路径，后续来源只追加 source/context。引用型文件通过 `/courses/:id/files/:file_id` 补完整元数据。
+
+删除安全闸门是硬性不变量：只有课程 files 主列表完整成功后，`CrawlResult.files_listed_ok` 才能为真；只有它为真，才允许把本轮未出现的 ID 判定为远端删除。网络失败、权限错误、解析失败或结果不可信时，绝不能标记 missing 或删除本地文件。
+
+页面归档写入 `<课程>/_pages/`，并将相对链接改写为平台绝对 URL。当前并未下载所有外链资源，因此这是“正文归档”，不是完全离线镜像；文案必须准确。
+
+## 12. 增量同步、命名和删除语义
+
+桌面端 `StateStore.upsert_file()` 的增量重下条件：
+
+- 第一次见到该 `file_id`。
+- 当前状态不是 `downloaded`。
+- size、updated_at、modified_at 或 filename 变化。
+- 数据库记录的本地文件不存在。
+
+全量同步必须仍先 upsert 每个远端文件，再决定是否调度下载。`v1.0.5` 起实现为：
+
+```python
+state_needs_download = self.state.upsert_file(record)
+needs = full or state_needs_download
+```
+
+禁止改回使用 `full or upsert_file(...)` 的短路表达式；“空数据库执行 full 后 files 记录完整”已有回归测试。
+
+Downloader 只处理同步引擎已经判定需要下载的任务，不能再次按目标文件大小短路；远端内容可能在大小不变时更新。`v1.0.5` 起，全量同步会强制重新下载所有未被排除的文件，增量同步也会正确覆盖同大小的变更文件。
+
+发布目标的文件命名和路径安全规则：
+
+- 课程目录和路径组件必须清洗 Windows 非法字符、控制字符、尾随点/空格和保留名。
+- 同一目录同名但不同 `file_id` 必须生成 `name (n).ext`，绝不能静默覆盖。
+- 路径必须保持在配置的下载根目录内，任何远端名称都不得造成目录穿越。
+- 课程改名目前可能生成新目录而保留旧目录；修改迁移策略前不得自动批量删除旧数据。
+
+`v1.0.5` 起，源码会逐组件清洗 `folder_path` 和本地文件名，以 `realpath/commonpath` 验证课程根目录边界，并结合数据库历史占用、磁盘已有文件与 `.part` 文件稳定避让同名。状态库的 `filename/display_name` 有意保留 Canvas 远端原名，安全后的实际名称只用于 `DownloadTask`，权威落盘位置记录在 `local_path`；不要把本地安全名写回远端 filename，否则后续会误判远端重命名。
+
+远端删除语义：
+
+- `prune=false`：仅把数据库状态改为 `remote_missing`，保留本地文件。
+- `prune=true`：只有通过 `files_listed_ok` 安全闸门后，且 `local_path` 经真实路径检查仍位于当前课程目录内，才允许删除对应本地文件。旧数据库中的越界路径只标记 missing，不删除目标。
+- 存储管理器的“用户主动删除”会同时删文件和数据库行，下次同步会重新下载；UI 应明确这一结果。
+
+## 13. 下载算法
+
+桌面端可靠下载流程：
+
+1. 下载前汇总任务大小，保证下载后仍不低于 `min_free_space_gb`。
+2. 优先通过 `/courses/:course/files/:file` 获取新的签名 URL；失败才使用爬取对象的备用 URL。
+3. 写入 `目标文件.part`。
+4. 已有 `.part` 时使用 HTTP Range 续传；服务忽略 Range 并返回 200 时从头覆盖。
+5. 以 1 MiB chunk 流式写入，并在 chunk 间检查停止事件。
+6. 已知远端大小时必须校验完整长度。
+7. 成功后用 `os.replace(part, dest)` 原子替换。
+8. 失败保留 `.part` 供下次续传，并把错误写入状态库。
+
+并发只用于文件内容下载，`ThreadPoolExecutor` 上限由配置控制。完成回调运行在线程上下文，不能直接操作 GUI。
+
+Android 当前直接写目标文件，缺少 `.part`、续传、长度校验、原子替换、重试和同名避让。补齐时应优先实现：临时文件 + 长度校验 + 原子替换 + 唯一命名，再实现断点续传和细化重试。
+
+## 14. 状态库与状态机
+
+### 14.1 桌面 SQLite
+
+- WAL 模式，`synchronous=NORMAL`。
+- 表：`courses`、`files`、`sync_runs`、`kv`。
+- 文件状态：`pending`、`downloaded`、`failed`、`remote_missing`。
+- 每个线程独立 SQLite connection，连接和 cursor 绝不能跨线程传递。
+- 类级写锁串行化写事务。
+- `close()` 只关闭调用线程自己的连接。
+
+`_write_lock_cursor()` 当前异常路径仍会 commit，没有 rollback 分支。新增多语句事务前先修复该上下文管理器，或显式证明操作原子性并补失败测试。
+
+### 14.2 Android SQLite
+
+- 使用 `SQLiteOpenHelper`，不是 Room。
+- 表：`courses`、`files`、`sync_runs`。
+- Android 字段少于桌面端，状态和增量元数据也不完整。
+- 不允许把桌面数据库文件导入 Android，反之亦然。
+- 当前增量只比较 status 和 size；应补更新时间、本地存在性、可靠错误状态和迁移测试。
+
+## 15. GUI 线程、窗口和资源生命周期
+
+### 15.1 桌面线程规则
+
+- `LoginWorker`、`SilentLoginWorker`、`SyncWorker` 都是 QThread。
+- 工作线程通过 Signal 报告日志、进度、成功和失败；只允许 Qt 主线程更新控件。
+- 每个工作线程在自己线程内创建并关闭 auth/API/StateStore/SyncEngine，不得把连接缓存给主线程。
+- 每次手动同步前重新加载配置，使设置修改立即生效。
+- 同一时刻只允许一个同步 worker。
+- 停止必须调用 `SyncEngine.stop()` 协作取消，不得使用 `QThread.terminate()`。
+
+当前退出只等待同步线程约 5 秒，阻塞请求超过该时间可能触发 `QThread still running`。后续应设计可靠退出等待和可取消请求，而不是强杀线程。
+
+### 15.2 主窗口和布局
+
+- 主窗口最小支持尺寸为 `880x620`。
+- “立即同步”“全量同步”“停止”等主操作在 880x620、125%/150% DPI、长用户名和长状态文本下必须完整可见。
+- 长课程名、文件名、用户名和路径使用省略显示并提供 tooltip，不能挤掉操作区。
+- 固定格式控件应有稳定的最小尺寸，busy/loading/error 不得导致布局跳动。
+- 主窗口关闭默认进托盘；忙碌时托盘同步动作应禁用。
+- 单实例二次启动必须正确唤醒已有窗口。
+- 删除、退出、覆盖等不可逆操作必须有明确确认和结果反馈。
+
+桌面主题应保持安静、实用、适合高频资料管理，不要用营销式大标题、装饰性浮层或层层嵌套卡片。既有主色为 `#4F46E5`，交互深色 `#4338CA`，更深色 `#312E81`，背景 `#F6F7FC`；新增状态色应具备足够对比度，不能让界面变成单一紫色层级。
+
+### 15.3 Android UI
+
+- 保持 Material 3 与现有品牌色，支持明暗主题。
+- 图标按钮必须设置可理解的 `contentDescription`；纯装饰图标可为 null。
+- 新增用户文案优先放资源文件，避免扩大硬编码字符串。
+- 长文本必须换行或省略，触控目标不得过小。
+- 必须覆盖窄屏、超长中文、无数据、加载、失败、离线、权限拒绝和同步中状态。
+- 删除必须二次确认；分享仅授予临时只读 URI 权限。
+- 随数据库变化的列表不能用缺少 key 的 `remember` 永久缓存旧结果。
+
+## 16. 桌面应用内预览规范
+
+入口为 `gui/previewer.py::_detect_type()` 和 `DocumentPreviewDialog`。
+
+### 16.1 格式矩阵
+
+- PDF：优先 `QPdfDocument + QPdfView`，多页并适配宽度；失败时用 PyMuPDF 降级，目前只渲染第一页。
+- 图片：PNG、JPEG、GIF、BMP、WebP、ICO、SVG、TIFF、AVIF、HEIC、HEIF。GIF 用 QMovie，SVG 用 QtSvg；Qt 解码失败时用 Pillow/pillow-heif。
+- 文本和代码：常见源码、日志、Markdown、JSON、XML 等；UTF-8-sig 解码并容错，最多读取 2 MiB。
+- HTML：QTextBrowser 内显示，最多 4 MiB，外部导航默认受控。
+- CSV/TSV：最多 1000 行、40 列，避免超大文件冻结 UI。
+- RTF：自有控制字、Unicode 和代码页解码。
+- Word/Excel/PowerPoint/ODF：优先 Office/LibreOffice 转 PDF；失败后用 python-docx/openpyxl/python-pptx/odfpy 结构化提取。
+- 音视频：QtMultimedia；格式被识别不代表当前系统一定有对应 codec。
+
+旧二进制 `.doc/.xls/.ppt` 在没有 Office 或 LibreOffice 时无法高保真解析，必须显示清晰的降级说明，不能假装成功。结构化解析只保证可读内容，不保证分页、图表、动画、宏和复杂布局保真。
+
+`.ts` 有双重含义：MPEG-TS 与 TypeScript。必须通过 188 字节同步字节特征判断媒体，不能仅按扩展名分类。
+
+### 16.2 Office 转换安全
+
+- 转换在 Python 后台线程执行，不得在该线程创建或操作 Qt GUI 对象。
+- Windows COM 打开文档必须只读、禁提示，并设置 `AutomationSecurity=3` 禁用宏。
+- LibreOffice 使用独立临时 UserInstallation profile，设超时并支持取消。
+- 临时目录以 `fudan_preview_` 创建。
+- 对话框关闭后迟到的转换结果必须立即清理，不能向已销毁 QObject 发结果。
+
+### 16.3 媒体控制
+
+播放器必须保留：
+
+- 播放/暂停。
+- 停止并归零。
+- 后退/前进 10 秒。
+- 用户可拖动进度条；不可 seek 时禁用或明确表现。
+- 0-100 音量。
+- 单曲循环；兼容 Qt6 loops 枚举并保留 EndOfMedia 兜底。
+- 播放错误在播放器内部可见，不应只写日志。
+
+### 16.4 资源清理硬规则
+
+`DocumentPreviewDialog` 必须使用 `WA_DeleteOnClose`，并让 `done()`、`closeEvent()` 和应用退出清理都进入幂等路径。关闭顺序必须涵盖：
+
+1. 取消 Office 转换。
+2. 停止并解除 QMediaPlayer/QAudioOutput/QVideoWidget。
+3. 停止 GIF/QMovie。
+4. 让 PDF view 脱离 document。
+5. `QPdfDocument.close()`，并在 Windows 同步销毁底层对象。
+6. 最后删除临时 PDF 和临时目录。
+
+不能只调用 `deleteLater()` 就立刻删除临时 PDF；Windows 文件句柄尚未释放会导致失败或崩溃。主窗口保存预览窗口弱引用时，释放回调必须比较对象身份，旧窗口延迟 finished 不能清掉新窗口引用。
+
+## 17. Android 内置预览目标
+
+Android 当前 `FileUtils.openFile()` 使用 `ACTION_VIEW`，会跳到系统/第三方应用；这不满足“软件内直接查看”的最终要求。
+
+实现时建议分层，而不是为每个扩展名堆独立 Activity：
+
+1. 统一 `PreviewRoute(file, detectedType)` 和 MIME/魔数识别。
+2. PDF 使用受支持的应用内 PDF 渲染方案，支持多页、缩放和错误状态。
+3. 图片用 Compose/可靠图片解码器，覆盖动图、超大图和 HEIF 能力降级。
+4. 文本/CSV/HTML 使用有大小上限的流式或分页读取，禁止一次把超大文件塞进内存。
+5. 音视频优先使用成熟的 Media3/ExoPlayer，而不是自行实现解码和播放状态机；实现进度拖动、音量、单曲循环和后台/生命周期释放。
+6. Office/ODF 需要明确可维护的渲染/转换策略；若格式不能保真，显示结构化降级和限制，不得偷偷跳外部应用。
+7. 预览页面保留安全分享入口，并处理文件缺失、损坏、权限和 codec 不支持。
+
+实现每一类格式时都要有合成测试文件，禁止把真实课程资料加入仓库。
+
+## 18. 分享语义
+
+桌面 `gui/sharing.py` 当前提供：
+
+- 复制文件 URL 和路径到剪贴板。
+- 另存副本。
+- 复制路径。
+- 在文件管理器中定位。
+
+这是本地文件操作，不是网络上传或生成公开链接。新增云分享或上传前必须单独设计授权、隐私、进度、取消和失败恢复。
+
+Android 使用 `ACTION_SEND + FileProvider + ShareSheet`。只授予临时只读权限，限制 FileProvider 暴露目录，分享前确认文件仍存在。中文、空格、撇号和长路径都必须测试。
+
+## 19. 自动化测试与验收
+
+### 19.1 桌面测试
+
+在 `elearning-sync/`：
+
+```powershell
+$env:QT_QPA_PLATFORM='offscreen'
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -m pytest -q -rs -p no:cacheprovider
+```
+
+`v1.0.5` 发布基线：完整 Qt 隔离环境为 `53 passed`、无跳过。缺少 QtMultimedia 的基础环境会跳过媒体生命周期测试，只适合日常逻辑检查；发布验收不能接受该 skip。
+
+现有测试覆盖配置路径、认证回退、不记住密码、登录流程、删除安全、PDF 预览、扩展预览生命周期、分享和 QtMultimedia 探测。以下改动必须追加定向测试：
+
+- full 同步先 upsert 再调度。
+- Android/桌面分页、429 和 5xx 退避。
+- 同名文件冲突和路径穿越。
+- 数据库迁移、事务 rollback。
+- Office 转换失败、超时、关闭后迟到结果。
+- 媒体 seek、循环、错误和关闭进程退出。
+
+### 19.2 Android 测试
+
+Windows PowerShell：
+
+```powershell
+cd android-app
+$env:JAVA_HOME = "<JDK 17 路径>"
+.\gradlew.bat --version
+.\gradlew.bat assembleDebug
+.\gradlew.bat lintDebug
+.\gradlew.bat connectedDebugAndroidTest
+```
+
+`connectedDebugAndroidTest` 需要 API 26+ 设备/模拟器。现有 `HomeScreenTest` 有 8 个插桩测试，最近记录为 API 36 模拟器 8/8 通过；仍缺认证、分页、数据库迁移、下载完整性、Worker 重试和文件预览的单元/集成测试。
+
+### 19.3 人工发布验收
+
+桌面至少检查：
+
+- 880x620、125%/150% DPI、长用户名/课程名时主操作可见。
+- 首次登录、记住/不记住密码、静默登录、退出登录。
+- 增量、全量、停止、网络失败、429、磁盘不足、远端空列表。
+- 托盘隐藏/唤醒、单实例、开机自启、真正退出。
+- PDF 多页、DOCX/XLSX/PPTX/ODF、常见图片、GIF、中文文本/CSV/HTML/RTF。
+- MP3/MP4 播放、拖动、前后跳转、音量、单曲循环、关闭后进程退出。
+- 中文/空格/撇号路径下的复制、另存、定位和分享。
+
+Android 至少检查：
+
+- Android 8、主流新版本和 API 36 模拟器/真机中的登录与同步。
+- 前后台切换、进程重建、离线、权限拒绝、Worker 重试。
+- 窄屏、深色、超长中文、空状态、错误状态。
+- 删除确认、分享 URI 权限、卸载后的数据语义。
+- 内置预览完成后逐类验证 PDF/Office/图片/文本/音视频及生命周期。
+
+## 20. Windows 构建和发布
+
+正式构建只能使用 `elearning-sync/复小学.spec`：
+
+```powershell
+cd elearning-sync
+.\.venv\Scripts\python -m pytest -q
+.\.venv\Scripts\python -m PyInstaller --clean --noconfirm 复小学.spec
+```
+
+产物是 `dist\复小学\复小学.exe`。spec 会显式收集 QtMultimedia、QtPdf、Office/ODF、Pillow/HEIF 和 PyMuPDF；缺少匹配的 QtMultimedia 时应立即失败。不要用仓库旧 `vendor/` 拼 DLL。
+
+再用 Inno Setup 6 编译 `installer/setup.iss`。`v1.0.5` 已验证的隔离构建基线约为 339.6 MiB、525 个文件，且不应混入 NumPy/MKL；该数字只是异常膨胀检测参考，不是固定验收值。安装器的固定 `AppId` 关系到覆盖升级，未经迁移设计不得修改。
+
+发布前同步版本：
+
+- `elearning-sync/VERSION`
+- `elearning-sync/fudan_sync/__init__.py::__version__`
+- `elearning-sync/installer/setup.iss` 的 `MyAppVersion`
+- `OutputBaseFilename`
+- 根 README/桌面 README 中展示的版本
+- Android `versionName`，并严格递增 `versionCode`
+
+`v1.0.5` 起安装器不再使用 `[UninstallDelete]` 递归删除 AppData，卸载时默认保留配置、Cookie、数据库、日志和课程资料。`test_installer_safety.py` 防止该危险规则被重新引入。
+
+发布产物应在干净 Windows x64 虚拟机完成全新安装、覆盖升级、自启、卸载和核心预览验收，生成 SHA-256；公开发布建议对 EXE 和安装器进行代码签名。仓库中任何旧 `release/` 文件都不能代表当前 HEAD。`v1.0.5` 使用新标签发布，禁止移动、覆盖或强推已有的 `v1.0.4` 标签。
+
+`v1.0.5` 的本机发布验收记录（2026-09-18）：
+
+- 桌面完整测试 `53 passed`、无跳过；打包后的 EXE 离屏启动 8 秒正常存活。
+- PyInstaller 产物 525 个文件、约 339.6 MiB；Inno Setup 6.7.3 编译成功。
+- Windows 安装器 SHA-256：`33814C57BEF0681900361E98B9A72F8EECF8D10977822528B6D94CCD4972BB77`。
+- Windows 安装器未做 Authenticode 代码签名，用户可能看到“未知发布者”；不得声称已签名。
+- Android `lintDebug` 通过，release APK/AAB 构建成功；无连接设备，因此本轮未运行 `connectedDebugAndroidTest`。
+- APK SHA-256：`D663289390B69E997362D76967CE10BC1A1149E165AD0634AE5821EEAD825F42`。
+- AAB SHA-256：`F95A2EB80A91FE8CE0D085F77270B3201CB2439228A7287F0F10B7F7A972FA52`。
+
+## 21. Android 构建和发布
+
+```powershell
+cd android-app
+.\gradlew.bat lintDebug
+.\gradlew.bat connectedDebugAndroidTest
+.\gradlew.bat assembleRelease
+.\gradlew.bat bundleRelease
+```
+
+产物：
+
+- Debug APK：`app/build/outputs/apk/debug/app-debug.apk`
+- Release APK：`app/build/outputs/apk/release/app-release.apk`
+- Release AAB：`app/build/outputs/bundle/release/app-release.aab`
+
+没有真实 release keystore 时，构建脚本会回退 debug 签名，这只用于保证克隆后可构建，绝不能公开发布。发布前用 `apksigner verify --verbose --print-certs` 验证证书；当前预期 SHA-256 指纹为：
+
+```text
+1dc096a7647e931084dba2387487b6283f407c83b1feadb5b329cae70f1ef077
+```
+
+发布版目前未启用 minify。若启用 R8/ProGuard，必须增加并验证 Gson 模型、OkHttp、Compose 和反射相关规则。
+
+## 22. UI/UX 发布标准
+
+所有新增功能必须具备完整状态，而不是只有 happy path：
+
+- 默认、hover/focus/pressed、disabled、loading、success、empty、error。
+- 操作可取消时提供取消；不能立即取消时说明正在安全停止。
+- 破坏性操作在动作附近解释影响，并允许取消。
+- 进度文字和数值一致，不显示虚假的 100%。
+- 错误告诉用户发生了什么、数据是否安全、下一步能做什么。
+- 图标优先使用现有图标体系；未知图标有 tooltip/contentDescription。
+- 不用文字按钮代替已形成共识的播放、暂停、停止、前后跳转等图标，但必须保留无障碍名称。
+- 不用弹窗掩盖可以在当前上下文解决的错误；长期任务不要冻结主界面。
+- 不在界面内堆叠开发说明、快捷键教程或实现细节。
+
+UI 改动完成后必须实际运行并截图检查关键尺寸；仅阅读代码不能证明按钮没有遮挡。
+
+## 23. 安全与隐私标准
+
+- 只同步当前账户有权访问的内容，遵守学校和课程资料使用规则。
+- 不新增遥测、上传、外链分享或第三方分析，除非用户明确授权且有隐私说明。
+- 日志默认脱敏；URL query、headers、Cookie 和认证响应不完整输出。
+- 所有远端文件名都视为不可信输入，防目录穿越、保留名和覆盖攻击。
+- Office 自动化一律禁宏、只读、禁提示；预览不执行文档内代码。
+- HTML 预览不得自动执行脚本或任意导航。
+- Android FileProvider 路径应最小化，Manifest 不应长期保留无必要的 cleartext、存储、前台服务或开机权限。
+- `allowBackup` 与 Keystore 恢复后的失效行为需要显式设计；解密失败应清理失效密文并重新登录。
+- 删除本地课程资料、数据库迁移、卸载清理等操作应优先可恢复或明确确认。
+
+当前 `password_login.py` 在找不到 CAS 回调时，会把 `authnEngine` HTML 前 200 字符拼进异常信息；该片段可能含跳转或认证上下文。修复前不要把此异常全文写入公开日志/Issue，后续应只保留 HTTP 状态和稳定错误码并补脱敏测试。
+
+## 24. 已知缺口和优先级
+
+### v1.0.5 已解决的发布阻断
+
+1. 桌面 full 同步会无条件 upsert，再合并 full 调度判定。
+2. 桌面远端路径逐组件清洗、限制在课程根目录内，并稳定避让跨轮次同名文件。
+3. 已调度的同大小变更文件不再被下载器误跳过；full 会真正覆盖全部未排除文件。
+4. prune 删除增加课程目录边界，旧数据库中的越界路径不会被删除。
+5. 完整 Qt 发布环境已验证 QtMultimedia/QtPdf，桌面测试通过且无跳过。
+6. 安装器卸载不再无提示递归删除 AppData 用户数据。
+
+### P0：完整产品要求验收前必须处理
+
+1. Android 实现应用内 PDF/Office/图片/文本预览和音视频播放器；当前外部 Intent 不符合产品要求。
+2. Android 下载改为临时文件、完整性校验和原子替换，解决失败后残缺文件与同名覆盖。
+3. Android Canvas API 实现 Link 分页、限流、可区分错误；禁止把 API 失败显示为“同步完成”。
+
+### P1：高优先级可靠性
+
+- Android 抓取能力与桌面端对齐：目录、模块、页面、作业、公告、大纲和安全删除。
+- Android UI 同步与 WorkManager 增加全局互斥；失败使用 retry/failure 的正确语义。
+- Android 数据库使用非破坏性迁移；增量加入时间戳和本地存在性。
+- Android 修复文件页/学期页 `remember` 缓存导致的数据滞后。
+- Android 退出登录取消周期工作；不记住密码时清理旧密码。
+- Android 同时接受两种 Canvas 会话 Cookie；User-Agent 已在 `v1.0.5` 改为跟随构建版本。
+- 桌面统一排除扩展名规范：GUI 当前保存 `exe`，引擎比较 `.exe`。
+- 桌面 CLI `login --method cookie` 成功后持久化 auth.method。
+- 桌面认证失败信息移除 `authnEngine` HTML 片段，只输出脱敏错误上下文。
+- 桌面课程本地目录定位复用同步引擎的路径清洗规则。
+- 桌面退出流程可靠等待协作停止，避免运行中的 QThread 被销毁。
+- StateStore 写事务异常时 rollback。
+
+### P2：一致性和维护性
+
+- Android README 已在 `v1.0.5` 修正版本、SQLite 和后台同步描述；仍须在内置预览完成后更新预览说明。
+- 根 README 的 Releases 链接已在 `v1.0.5` 对齐实际 `origin`。
+- 修正文档中“HTML 完全离线”的表述，或真正下载依赖资源。
+- 页面归档改为稳定覆盖/版本化，避免每轮产生 `(1)/(2)` 重复文件。
+- 记录可复现的桌面发布依赖锁定清单；不要用整套本机 conda 环境充当锁文件。
+- 收窄 Android FileProvider、清理无用权限和未实现的 Service/Receiver 声明。
+- 为认证、数据库、下载、Worker 和预览补充 Android 单元/集成测试。
+- 建立 CI、开发依赖清单和 CHANGELOG；当前仓库没有 GitHub Actions、依赖锁或统一 pytest 配置。
+
+修复缺口时一次只解决清晰范围，先加测试再改行为，避免同时重写两端架构。
+
+## 25. 常见改动操作手册
+
+### 25.1 新增一种桌面预览格式
+
+1. 在 `_detect_type()` 增加扩展名、MIME 或魔数识别，处理扩展名冲突。
+2. 选择现有预览类别，确需新增时才增加 widget/loader。
+3. 设置大小/行列/页数上限，重活放后台。
+4. 把可选依赖加入 `requirements.txt`，懒加载并提供缺依赖提示。
+5. 若打包时动态导入，更新 `复小学.spec` hiddenimports/datas/binaries。
+6. 增加合成文件测试、损坏文件测试、反复打开关闭测试和打包后人工验收。
+
+### 25.2 修改认证
+
+1. 对照 PC 与 Android 的请求字段、Cookie、跳转和 RSA 编码。
+2. 用 mock 响应覆盖正常、密码错误、验证码/协议变化、缺字段和超时。
+3. 确认日志无敏感数据，响应均关闭。
+4. 验证桌面四种认证方法和旧配置回退。
+5. 验证 Android 记住/不记住、自动登录、退出和 Worker。
+
+### 25.3 修改同步或删除逻辑
+
+1. 先画清“发现成功”和“空结果”的区别。
+2. 保持 file ID 去重、路径安全和删除闸门。
+3. 测试新文件、变更文件、本地丢失、远端删除、API 失败、full、停止和磁盘不足。
+4. 检查数据库状态和实际文件系统结果一致。
+5. 绝不使用真实课程目录做破坏性测试。
+
+### 25.4 修改数据库 schema
+
+1. 写出旧版本到新版本的显式迁移。
+2. 用包含真实形状但脱敏/合成的数据副本测试迁移。
+3. 测试中途失败不会半迁移或清空用户数据。
+4. 更新查询、模型、统计、备份/恢复说明和本文件。
+
+### 25.5 修改主界面
+
+1. 保持网络/磁盘工作在线程或协程 IO 上。
+2. 补齐 loading/empty/error/disabled/busy 状态。
+3. 验证最低尺寸、DPI、长文本和键盘/触控。
+4. 实际截图检查，不以布局代码推断结果。
+5. 确保主要操作始终可见，尤其是“立即同步”。
+
+## 26. 完成定义
+
+一项改动只有同时满足以下条件才算完成：
+
+- 行为满足用户要求，且没有把未实现功能写成已实现。
+- 保持本文件中的硬性不变量。
+- 对新增或修复行为有与风险相称的自动化测试。
+- 相关测试、构建、静态检查实际运行并记录结果；不能运行的部分明确说明原因。
+- GUI 改动经过桌面/设备实际视觉检查和关键交互检查。
+- 不含凭据、真实课程资料、本机配置、构建垃圾或无关格式化。
+- README、版本、安装器、发布说明与实现一致。
+- `git diff --check` 通过，`git status --short` 中只有预期文件。
+- 用户要求上传时，提交信息准确、推送目标核对无误，并反馈 commit/分支/远端。
+
+## 27. 交接输出模板
+
+后续 Codex 完成一轮工作时，应向用户简要报告：
+
+1. 已修复/新增的用户可见结果。
+2. 关键修改文件。
+3. 实际运行的测试与结果。
+4. 尚未解决的风险或环境限制。
+5. 若已提交/推送：分支、commit SHA 和远端仓库。
+
+不要只报告“代码已修改”；必须让下一位开发者能判断项目是否真的可运行、可测试、可发布。

@@ -58,7 +58,10 @@ def sanitize_path_component(name: str, fallback: str = "unnamed") -> str:
     cleaned = cleaned.strip(" .")
     if not cleaned:
         cleaned = fallback
-    if cleaned.upper() in _RESERVED_NAMES:
+    # Windows 设备名即使带扩展名也保留，例如 CON.txt、LPT1.log。
+    # 只检查完整字符串会让这些名称在创建文件时仍然失败。
+    reserved_stem = cleaned.split(".", 1)[0].rstrip(" .").upper()
+    if reserved_stem in _RESERVED_NAMES:
         cleaned = f"_{cleaned}"
     if len(cleaned) > _MAX_NAME_LEN:
         stem, dot, ext = cleaned.rpartition(".")

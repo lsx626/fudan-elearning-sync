@@ -5,7 +5,7 @@ import html as html_lib
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from .config import AppConfig
 from .crawler import Crawler, CrawlResult, RemoteFile
@@ -99,6 +99,89 @@ class SyncEngine:
             code = sanitize_path_component(course.code)
             name = f"{name} [{code}]"
         return os.path.join(self.cfg.root_dir, name)
+
+    @staticmethod
+    def _path_key(path: str) -> str:
+        """返回适合本地路径占用表的大小写不敏感键。"""
+        return os.path.normcase(os.path.abspath(path)).casefold()
+
+    @staticmethod
+    def _is_within_course(course_dir: str, path: str,
+                          allow_course_dir: bool = False) -> bool:
+        """使用真实路径判断 path 是否仍位于课程目录内。"""
+        try:
+            course_real = os.path.realpath(os.path.abspath(course_dir))
+            path_real = os.path.realpath(os.path.abspath(path))
+            common = os.path.commonpath((course_real, path_real))
+        except (OSError, ValueError):
+            return False
+        same = os.path.normcase(common) == os.path.normcase(course_real)
+        if not same:
+            return False
+        if allow_course_dir:
+            return True
+        return os.path.normcase(path_real) != os.path.normcase(course_real)
+
+    @staticmethod
+    def _safe_folder_path(folder_path: str) -> str:
+        """逐组件清洗 Canvas 目录路径，并始终返回相对 POSIX 风格路径。"""
+        components = []
+        for component in str(folder_path or "").split("/"):
+            if not component:
+                continue
+            components.append(sanitize_path_component(component, fallback="folder"))
+        return "/".join(components)
+
+    def _existing_path_owners(self, course_id: int,
+                              course_dir: str) -> Dict[str, Set[int]]:
+        """读取历史路径占用，忽略不在当前课程目录中的旧/异常记录。"""
+        owners: Dict[str, Set[int]] = {}
+        for stored in self.state.list_files_by_course(course_id):
+            local_path = stored.get("local_path")
+            if not local_path or not self._is_within_course(course_dir, local_path):
+                continue
+            key = self._path_key(local_path)
+            owners.setdefault(key, set()).add(int(stored["file_id"]))
+        return owners
+
+    def _allocate_local_path(
+            self, course_dir: str, remote: RemoteFile,
+            owners: Dict[str, Set[int]]) -> Tuple[str, str, str]:
+        """为远端文件分配安全、稳定且不会覆盖其他文件的本地路径。"""
+        safe_folder = self._safe_folder_path(remote.folder_path)
+        safe_filename = sanitize_path_component(
+            remote.filename, fallback=f"file_{remote.file_id}")
+        parent = os.path.join(course_dir, *safe_folder.split("/")) \
+            if safe_folder else course_dir
+        if not self._is_within_course(course_dir, parent, allow_course_dir=True):
+            raise RuntimeError(f"文件 {remote.file_id} 的目标目录越过课程目录")
+
+        stem, ext = os.path.splitext(safe_filename)
+        for index in range(10000):
+            local_filename = safe_filename if index == 0 else f"{stem} ({index}){ext}"
+            candidate = os.path.join(parent, local_filename)
+
+            # 已存在的符号链接可能把 realpath 指向课程目录之外；该名称视为占用，
+            # 后续带序号的候选仍可正常尝试。
+            if not self._is_within_course(course_dir, candidate):
+                continue
+
+            key = self._path_key(candidate)
+            path_owners = owners.get(key, set())
+            owned_by_other = bool(path_owners - {remote.file_id})
+            own_record = remote.file_id in path_owners
+            disk_occupied = (os.path.lexists(candidate)
+                             or os.path.lexists(f"{candidate}.part"))
+            if owned_by_other or (disk_occupied and not own_record):
+                continue
+
+            owners.setdefault(key, set()).add(remote.file_id)
+            if index:
+                self._log("info", "文件 %s 的目标路径已占用，改名为 %s",
+                          remote.filename, local_filename)
+            return safe_folder, local_filename, candidate
+
+        raise RuntimeError(f"无法为文件 {remote.file_id} 分配安全的本地路径")
 
     def discover_courses(self) -> List[CourseInfo]:
         cfg = self.cfg.sync
@@ -221,7 +304,7 @@ class SyncEngine:
 
         # ---- 构建下载任务 ----
         tasks: List[DownloadTask] = []
-        claimed_paths: Dict[str, int] = {}  # 本地路径 -> 已占用的 file_id
+        path_owners = self._existing_path_owners(course.id, course_dir)
         for remote in result.files.values():
             skip_reason = self._should_skip(remote)
             if skip_reason:
@@ -232,23 +315,8 @@ class SyncEngine:
                 self._log("debug", "跳过文件 %s（%s）", remote.filename, skip_reason)
                 continue
 
-            rel_folder = remote.folder_path or ""
-            # 不同 file_id 同名同目录时改名避让，避免互相覆盖
-            base_path = os.path.join(course_dir, *rel_folder.split("/"), remote.filename) \
-                if rel_folder else os.path.join(course_dir, remote.filename)
-            claimer = claimed_paths.get(base_path)
-            if claimer is not None and claimer != remote.file_id:
-                original = remote.filename
-                stem, ext = os.path.splitext(remote.filename)
-                idx = 1
-                while os.path.join(os.path.dirname(base_path), f"{stem} ({idx}){ext}") \
-                        in claimed_paths:
-                    idx += 1
-                remote.filename = f"{stem} ({idx}){ext}"
-                base_path = os.path.join(os.path.dirname(base_path), remote.filename)
-                self._log("info", "文件 %s 与 file_id %d 同名，改名为 %s",
-                          original, claimer, remote.filename)
-            claimed_paths[base_path] = remote.file_id
+            rel_folder, local_filename, base_path = self._allocate_local_path(
+                course_dir, remote, path_owners)
 
             record = {
                 "file_id": remote.file_id,
@@ -269,12 +337,13 @@ class SyncEngine:
                 "local_path": base_path,
                 "extra": "",
             }
-            needs = full or self.state.upsert_file(record)
+            state_needs_download = self.state.upsert_file(record)
+            needs = full or state_needs_download
             if needs:
                 tasks.append(DownloadTask(
                     file_id=remote.file_id,
                     course_id=remote.course_id,
-                    filename=remote.filename,
+                    filename=local_filename,
                     folder_path=rel_folder,
                     course_dir=course_dir,
                     size=remote.size,
@@ -340,10 +409,11 @@ class SyncEngine:
             return
         ids = seen_ids if seen_ids is not None else []
         removed = self.state.mark_missing_files(
-            course.id, ids, prune=self.cfg.sync.prune)
+            course.id, ids, prune=self.cfg.sync.prune,
+            prune_root=self.course_local_dir(course))
         stats.files_removed += removed
         if removed and self.cfg.sync.prune:
-            self._log("info", "课程 [%s] 远端已删除 %d 个文件，本地已同步删除",
+            self._log("info", "课程 [%s] 远端已删除 %d 个文件，已清理安全范围内的本地副本",
                       course.name, removed)
 
     def _on_download_done(self, res: DownloadResult, stats: SyncStats) -> None:

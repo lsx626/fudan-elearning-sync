@@ -17,7 +17,7 @@
 
 ## 版本
 
-当前版本：**1.0.4**
+当前版本：**1.0.5**
 
 ## 目录结构
 
@@ -89,7 +89,7 @@ APK 输出：`app/build/outputs/apk/release/app-release.apk`
 
 ## 下载
 
-见 [Releases](https://github.com/fudan-elearning-sync/fudan-elearning-sync/releases)
+见 [Releases](https://github.com/lsx626/fuxiaoxue/releases)
 
 ## License
 

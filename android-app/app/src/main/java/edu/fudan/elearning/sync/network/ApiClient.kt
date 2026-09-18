@@ -1,5 +1,6 @@
 package edu.fudan.elearning.sync.network
 
+import edu.fudan.elearning.sync.BuildConfig
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -16,7 +17,7 @@ object ApiClient {
         .addInterceptor { chain ->
             val original = chain.request()
             val builder = original.newBuilder()
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android) FuXiaoXue/1.0.3")
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android) FuXiaoXue/${BuildConfig.VERSION_NAME}")
                 .header("Accept", "application/json")
             if (canvasSession.isNotEmpty()) {
                 builder.header("Cookie", "_normandy_session=$canvasSession")
