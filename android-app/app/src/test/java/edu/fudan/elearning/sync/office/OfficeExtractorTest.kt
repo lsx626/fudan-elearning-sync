@@ -2,19 +2,24 @@ package edu.fudan.elearning.sync.office
 
 import org.apache.poi.hslf.usermodel.HSLFSlideShow
 import org.apache.poi.hssf.usermodel.HSSFWorkbook
+import org.apache.poi.sl.usermodel.LineDecoration
+import org.apache.poi.sl.usermodel.ShapeType
 import org.apache.poi.ss.util.CellRangeAddress
 import org.apache.poi.xslf.usermodel.XMLSlideShow
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.apache.poi.xwpf.usermodel.XWPFDocument
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.awt.Color
 import java.awt.Dimension
 import java.awt.geom.Rectangle2D
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import org.apache.poi.xwpf.usermodel.Document
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -82,10 +87,12 @@ class OfficeExtractorTest {
         val texts = pageTexts(pages)
         assertTrue(texts.contains("第一章 概述"))
         assertTrue(texts.contains("第二章 结论"))
-        // 形状坐标按 磅→像素 换算：50pt * (1080/720pt) = 75px
+        // 形状锚点按 磅→像素 换算：50pt * (1080/720pt) = 75px；
+        // 文本还要按文本框内边距内缩（POI 默认左右 0.1in = 7.2pt => 10.8px，
+        // 上下 0.05in = 3.6pt => 5.4px），因此文本块边界略大于锚点边界
         val box = pages[0].items.filterIsInstance<PageItem.TextBlock>().first()
-        assertEquals(75f, box.rect.left, 1f)
-        assertEquals(60f, box.rect.top, 1f)
+        assertEquals(75f + 10.8f, box.rect.left, 1f)
+        assertEquals(60f + 5.4f, box.rect.top, 1f)
     }
 
     @Test
@@ -101,6 +108,194 @@ class OfficeExtractorTest {
             threw = true
         }
         assertTrue(threw)
+    }
+
+    /**
+     * v1.0.9 形状保真：装饰性自选形状、连接线箭头、组合形状递归平移、图表占位卡。
+     *
+     * 旧实现的 appendShape 只处理 Picture/TextShape/Table，无文字的装饰形状、
+     * 连接线与图形框会被静默丢弃；本测试锁定修复后的行为。
+     */
+    @Test
+    fun pptx_shapesConnectorsGroupAndChart() {
+        val file = write("shapes.pptx") { out ->
+            XMLSlideShow().use { show ->
+                show.setPageSize(Dimension(720, 405))
+                val slide = show.createSlide()
+
+                // 无文字的装饰性自选形状：必须画几何，而不是被当成空文本丢掉
+                val decor = slide.createAutoShape()
+                decor.shapeType = ShapeType.ROUND_RECT
+                decor.setAnchor(Rectangle2D.Double(30.0, 30.0, 200.0, 100.0))
+                decor.fillColor = Color(0x4F, 0x46, 0xE5)
+                decor.setLineWidth(3.0)
+                decor.lineColor = Color(0x31, 0x2E, 0x81)
+                decor.rotation = 30.0
+
+                // 连接线：水平直线的高为 0，仍必须保留为一条带箭头的线
+                val connector = slide.createConnector()
+                connector.setAnchor(Rectangle2D.Double(300.0, 60.0, 120.0, 0.0))
+                connector.setLineWidth(2.0)
+                connector.lineColor = Color.BLACK
+                connector.setLineTailDecoration(LineDecoration.DecorationShape.TRIANGLE)
+
+                // 组合形状：子坐标基于内部坐标系，需按组合锚点平移
+                val group = slide.createGroup()
+                group.setAnchor(Rectangle2D.Double(100.0, 200.0, 400.0, 150.0))
+                group.setInteriorAnchor(Rectangle2D.Double(0.0, 0.0, 400.0, 150.0))
+                val child = group.createAutoShape()
+                child.shapeType = ShapeType.ELLIPSE
+                child.setAnchor(Rectangle2D.Double(50.0, 40.0, 100.0, 60.0))
+                child.fillColor = Color.RED
+
+                // 图表：不假装高保真，转成占位卡 + 限制说明
+                // 注意：POI 的图形框只在 write() 时挂到幻灯片上，这里写盘后再解析即可
+                slide.addChart(show.createChart(slide), Rectangle2D.Double(380.0, 240.0, 250.0, 120.0))
+
+                show.write(out)
+            }
+        }
+
+        // 720pt 页宽 + 目标宽 720px => 缩放系数 1.0，断言用原始坐标
+        val pages = SlideExtractor.extract(file, 720)
+
+        assertEquals(1, pages.size)
+        val items = pages[0].items
+
+        val shapes = items.filterIsInstance<PageItem.Shape>()
+        assertEquals("装饰形状 + 组合内子形状", 2, shapes.size)
+
+        val decor = shapes.first { it.rect.left < 100f }
+        assertEquals(ShapeGeometry.ROUND_RECT, decor.geometry)
+        assertEquals(0xFF4F46E5L, decor.fill)
+        assertEquals(0xFF312E81L, decor.stroke)
+        assertEquals(30f, decor.rotationDeg, 0.01f)
+        assertEquals(30f, decor.rect.left, 1f)
+
+        // 组合内子形状：50+100=150、40+200=240（忽略组内缩放，只平移）
+        val grouped = shapes.first { it.rect.left > 100f }
+        assertEquals(ShapeGeometry.ELLIPSE, grouped.geometry)
+        assertEquals(150f, grouped.rect.left, 1f)
+        assertEquals(240f, grouped.rect.top, 1f)
+        assertEquals(0xFFFF0000L, grouped.fill)
+
+        // 连接线：两端点与箭头方向
+        val line = items.filterIsInstance<PageItem.Line>().first()
+        assertEquals(300f, line.x1, 1f)
+        assertEquals(60f, line.y1, 1f)
+        assertEquals(420f, line.x2, 1f)
+        assertEquals(60f, line.y2, 1f)
+        assertEquals(ArrowEnd.NONE, line.startArrow)
+        assertEquals(ArrowEnd.ARROW, line.endArrow)
+
+        // 图表：占位卡 + 说明文字
+        val placeholders = items.filterIsInstance<PageItem.Placeholder>()
+        assertTrue("图表应输出占位卡", placeholders.isNotEmpty())
+        assertTrue("占位卡应说明元素类型：${placeholders.first().label}",
+            placeholders.first().label.contains("图表"))
+    }
+
+    /** 大文件降分辨率、大页数整体缩放、POI 上限自适应。 */
+    @Test
+    fun limits_memoryAwareAndBigDocumentDowngrade() {
+        val mib = 1L shl 20
+        for (heap in listOf(128L * mib, 512L * mib, 8L shl 30)) {
+            val limit = OfficeLimits.memoryAwareLimit(heap)
+            assertTrue("heap=$heap limit=$limit 应落在 [100MiB, 384MiB]",
+                limit in (100L * mib)..(384L * mib))
+        }
+        // 小堆不低于 POI 默认值，大堆不超过 384 MiB
+        assertEquals(100L * mib, OfficeLimits.memoryAwareLimit(64L * mib))
+        assertEquals(384L * mib, OfficeLimits.memoryAwareLimit(8L shl 30))
+
+        // 普通文件保持屏幕宽度；大文件降到 1080–1440px
+        assertEquals(2560, OfficeLimits.targetWidth(2560, 1024L))
+        assertEquals(1440, OfficeLimits.targetWidth(2560, OfficeLimits.BIG_FILE_BYTES + 1))
+        assertEquals(1080, OfficeLimits.targetWidth(1000, OfficeLimits.BIG_FILE_BYTES + 1))
+
+        assertEquals(1f, OfficeLimits.pageScale(60), 0f)
+        assertEquals(OfficeLimits.BIG_DOC_SCALE, OfficeLimits.pageScale(61), 0f)
+    }
+
+    /** 失败语义：内存/记录超限给友好说明，普通损坏给原因，取消必须原样抛出。 */
+    @Test
+    fun parseFailure_memoryRecordLimitAndCancellation() {
+        val oom = OfficeExtractor.runParse {
+            throw OutOfMemoryError("Failed to allocate a 185199965 byte allocation")
+        }
+        assertEquals(OfficeLimits.MEMORY_HINT, (oom as OfficeParseResult.Failed).message)
+
+        // POI 5.2.5 单记录上限被触发时的原始文案
+        val recordLimit = OfficeExtractor.runParse {
+            throw IllegalStateException(
+                "Tried to allocate an array of length 185199965, " +
+                    "but the maximum length for the record type is 100000000"
+            )
+        }
+        assertEquals(OfficeLimits.MEMORY_HINT, (recordLimit as OfficeParseResult.Failed).message)
+
+        // 普通损坏保留原因，但不回显超长异常串
+        val corrupt = OfficeExtractor.runParse { throw IllegalStateException("not a valid OOXML file") }
+        assertTrue((corrupt as OfficeParseResult.Failed).message.contains("not a valid OOXML file"))
+        val longMessage = OfficeExtractor.runParse { throw IllegalStateException("x".repeat(5000)) }
+        assertTrue("异常串必须截断", (longMessage as OfficeParseResult.Failed).message.length < 300)
+
+        val blank = OfficeExtractor.runParse { throw IllegalStateException() }
+        assertTrue((blank as OfficeParseResult.Failed).message.contains("可能已损坏"))
+
+        // 空文档与成功语义
+        assertTrue(OfficeExtractor.runParse { emptyList() } is OfficeParseResult.Empty)
+        val page = DocPage(10, 10, emptyList())
+        assertTrue(OfficeExtractor.runParse { listOf(page) } is OfficeParseResult.Success)
+
+        // 取消（用户离开预览）绝不能被当成「解析失败」
+        var cancelled = false
+        try {
+            OfficeExtractor.runParse { throw CancellationException("cancelled") }
+        } catch (expected: CancellationException) {
+            cancelled = true
+        }
+        assertTrue("取消异常必须原样抛出", cancelled)
+    }
+
+    /** 大文档降分辨率：页模型整体缩放，坐标/字号/线宽/旋转同步缩小，且不放大。 */
+    @Test
+    fun scaledPage_shrinksGeometryAndKeepsFlags() {
+        val page = DocPage(1000, 500, listOf(
+            PageItem.TextBlock(
+                Rect4(10f, 20f, 210f, 120f),
+                listOf(DocParagraph(listOf(DocRun("标题", 40f))))
+            ),
+            PageItem.Shape(
+                rect = Rect4(0f, 0f, 100f, 50f),
+                geometry = ShapeGeometry.ELLIPSE,
+                fill = 0xFF4F46E5,
+                stroke = 0xFF000000,
+                strokeWidthPx = 4f,
+                rotationDeg = 15f
+            ),
+            PageItem.Line(0f, 0f, 100f, 100f, 0xFF000000, 2f, ArrowEnd.ARROW, ArrowEnd.NONE),
+            PageItem.Placeholder(Rect4(5f, 5f, 105f, 55f), "图表 · 已折叠，可分享查看")
+        ))
+
+        val half = page.scaled(0.5f)
+
+        assertEquals(500, half.widthPx)
+        assertEquals(250, half.heightPx)
+        val text = half.items.filterIsInstance<PageItem.TextBlock>().first()
+        assertEquals(5f, text.rect.left, 0.01f)
+        assertEquals(20f, text.paragraphs.first().runs.first().sizePx, 0.01f)
+        val shape = half.items.filterIsInstance<PageItem.Shape>().first()
+        assertEquals(50f, shape.rect.right, 0.01f)
+        assertEquals(2f, shape.strokeWidthPx, 0.01f)
+        assertEquals(15f, shape.rotationDeg, 0.01f)
+        val line = half.items.filterIsInstance<PageItem.Line>().first()
+        assertEquals(50f, line.x2, 0.01f)
+        assertEquals(ArrowEnd.ARROW, line.startArrow)
+        assertTrue(half.items.any { it is PageItem.Placeholder })
+
+        // factor >= 1 原样返回，绝不把模型放大
+        assertSame(page, page.scaled(2f))
     }
 
     @Test

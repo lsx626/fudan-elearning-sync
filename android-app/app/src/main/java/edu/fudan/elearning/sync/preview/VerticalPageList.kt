@@ -2,8 +2,10 @@ package edu.fudan.elearning.sync.preview
 
 import android.graphics.Bitmap
 import android.util.LruCache
+import edu.fudan.elearning.sync.R
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -13,23 +15,31 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,10 +53,13 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -78,6 +91,10 @@ fun VerticalPageList(
     }
     val listState = rememberLazyListState()
     val cache = remember { PageBitmapCache() }
+    val scope = rememberCoroutineScope()
+    var showJumpDialog by remember { mutableStateOf(false) }
+    // 全局缩放置位：递增后各页恢复 1x 并清除平移
+    var zoomResetToken by remember { mutableStateOf(0) }
 
     LazyColumn(
         state = listState,
@@ -88,6 +105,27 @@ fun VerticalPageList(
         if (header != null) {
             item { header() }
         }
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = { showJumpDialog = true }) {
+                    Text(stringResource(R.string.preview_jump_button))
+                }
+                Spacer(Modifier.width(12.dp))
+                TextButton(onClick = {
+                    scope.launch { listState.scrollToItem(0) }
+                }) {
+                    Text(stringResource(R.string.preview_back_top))
+                }
+                Spacer(Modifier.width(12.dp))
+                TextButton(onClick = { zoomResetToken += 1 }) {
+                    Text(stringResource(R.string.preview_zoom_reset))
+                }
+            }
+        }
         items((0 until pageCount).toList(), key = { it }) { page ->
             PageRow(
                 pageIndex = page,
@@ -95,9 +133,44 @@ fun VerticalPageList(
                 aspect = aspectOf(page),
                 cache = cache,
                 renderPage = renderPage,
-                maxZoom = maxZoom
+                maxZoom = maxZoom,
+                zoomResetToken = zoomResetToken,
+                onPageIndicatorClick = { showJumpDialog = true }
             )
         }
+    }
+
+    if (showJumpDialog) {
+        var pageText by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showJumpDialog = false },
+            title = { Text(stringResource(R.string.preview_jump_page, pageCount)) },
+            text = {
+                OutlinedTextField(
+                    value = pageText,
+                    onValueChange = { pageText = it.filter { ch -> ch.isDigit() } },
+                    label = { Text(stringResource(R.string.preview_jump_hint)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val page = pageText.toIntOrNull()
+                    if (page != null && page in 1..pageCount) {
+                        scope.launch { listState.scrollToItem(page - 1) }
+                        showJumpDialog = false
+                    }
+                }) {
+                    Text(stringResource(R.string.preview_jump_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showJumpDialog = false }) {
+                    Text(stringResource(R.string.preview_cancel))
+                }
+            }
+        )
     }
 }
 
@@ -108,7 +181,9 @@ private fun PageRow(
     aspect: Float,
     cache: PageBitmapCache,
     renderPage: suspend (Int) -> Bitmap?,
-    maxZoom: Float
+    maxZoom: Float,
+    zoomResetToken: Int,
+    onPageIndicatorClick: () -> Unit
 ) {
     var bitmap by remember(pageIndex) { mutableStateOf<Bitmap?>(cache[pageIndex]) }
     var failed by remember(pageIndex) { mutableStateOf(false) }
@@ -134,6 +209,14 @@ private fun PageRow(
     var scale by remember(pageIndex) { mutableStateOf(1f) }
     var offset by remember(pageIndex) { mutableStateOf(Offset.Zero) }
     var boxSize by remember(pageIndex) { mutableStateOf(IntSize.Zero) }
+
+    // 「重置缩放」：由父组件递增 token 触发，恢复到 1x 并清除平移
+    LaunchedEffect(zoomResetToken) {
+        if (zoomResetToken > 0) {
+            scale = 1f
+            offset = Offset.Zero
+        }
+    }
 
     Column {
         Box(
@@ -176,12 +259,14 @@ private fun PageRow(
             }
         }
         Text(
-            "第 ${pageIndex + 1} / $totalPages 页",
+            stringResource(R.string.preview_page_indicator, pageIndex + 1, totalPages),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.align(Alignment.CenterHorizontally).padding(4.dp)
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+                .clickable(onClick = onPageIndicatorClick)
+                .padding(4.dp)
         )
     }
 }

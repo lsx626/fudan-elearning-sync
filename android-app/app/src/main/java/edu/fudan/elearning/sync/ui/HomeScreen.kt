@@ -9,6 +9,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -32,12 +33,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -70,10 +74,12 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import edu.fudan.elearning.sync.BuildConfig
 import edu.fudan.elearning.sync.R
 import edu.fudan.elearning.sync.data.CourseStats
 import edu.fudan.elearning.sync.data.FileItem
@@ -94,7 +100,12 @@ fun HomeScreen(viewModel: AppViewModel) {
     val loginState by viewModel.loginState.collectAsState()
 
     var selectedTab by remember { mutableStateOf(Tab.COURSES) }
-    var selectedCourse by remember { mutableStateOf<CourseStats?>(null) }
+    val selectedCourse by viewModel.selectedCourse.collectAsState()
+
+    // 系统返回键：在文件列表层返回课程列表，而不是直接退出应用
+    BackHandler(enabled = selectedCourse != null) {
+        viewModel.clearCourseSelection()
+    }
 
     Scaffold(
         topBar = {
@@ -119,7 +130,7 @@ fun HomeScreen(viewModel: AppViewModel) {
                 },
                 navigationIcon = {
                     if (selectedCourse != null) {
-                        IconButton(onClick = { selectedCourse = null }) {
+                        IconButton(onClick = { viewModel.clearCourseSelection() }) {
                             Icon(
                                 Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "返回课程列表"
@@ -129,6 +140,7 @@ fun HomeScreen(viewModel: AppViewModel) {
                 },
                 actions = {
                     SyncButton(syncing = syncing, onClick = { viewModel.sync() })
+                    HomeOverflowMenu(viewModel)
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent,
@@ -207,12 +219,81 @@ fun HomeScreen(viewModel: AppViewModel) {
                     )
                 }
             }
+            SyncErrorBanner(viewModel)
             when {
                 selectedCourse != null -> FileListView(viewModel, selectedCourse!!)
                 selectedTab == Tab.COURSES ->
-                    CourseListView(viewModel, courses) { selectedCourse = it }
+                    CourseListView(viewModel, courses) { viewModel.selectCourse(it.course.id) }
                 selectedTab == Tab.STORAGE -> StorageView(viewModel, courses)
                 else -> SettingsView(viewModel, loginState)
+            }
+        }
+    }
+}
+
+/** 顶栏溢出菜单：全量同步等次要但常用的操作。 */
+@Composable
+private fun HomeOverflowMenu(viewModel: AppViewModel) {
+    var expanded by remember { mutableStateOf(false) }
+    IconButton(onClick = { expanded = true }) {
+        Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.menu_more))
+    }
+    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.menu_sync_now)) },
+            onClick = { expanded = false; viewModel.sync() }
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.menu_sync_full)) },
+            onClick = { expanded = false; viewModel.sync(full = true) }
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.menu_refresh)) },
+            onClick = { expanded = false; viewModel.refreshCourses() }
+        )
+    }
+}
+
+/**
+ * 同步失败横幅：如实说明失败原因，并提供重试/关闭。
+ *
+ * 历史缺陷是把「登录失效」「被限流」「网络错误」都显示成「同步完成」，
+ * 用户既不知道出了什么事，也不知道能做什么。
+ */
+@Composable
+private fun SyncErrorBanner(viewModel: AppViewModel) {
+    val error by viewModel.syncError.collectAsState()
+    val message = error ?: return
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        )
+    ) {
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            Text(
+                stringResource(R.string.sync_error_title),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                TextButton(onClick = { viewModel.clearSyncError() }) {
+                    Text(stringResource(R.string.action_close))
+                }
+                TextButton(onClick = {
+                    viewModel.clearSyncError()
+                    viewModel.sync()
+                }) {
+                    Text(stringResource(R.string.action_retry))
+                }
             }
         }
     }
@@ -433,7 +514,10 @@ private fun typeBadgeColor(ext: String): Color = when (ext) {
 /** 文件列表（某课程）。 */
 @Composable
 private fun FileListView(viewModel: AppViewModel, stats: CourseStats) {
-    val files = remember(stats.course.id) { viewModel.filesOf(stats.course.id) }
+    // 数据版本号作为 key：删除/同步后必须立刻反映数据库变化，
+    // 不能只按课程 id 缓存（历史缺陷：删完文件界面还在显示旧列表）。
+    val dataVersion by viewModel.dataVersion.collectAsState()
+    val files = remember(stats.course.id, dataVersion) { viewModel.filesOf(stats.course.id) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -510,14 +594,36 @@ private fun FileRow(file: FileItem, viewModel: AppViewModel) {
                     Text(
                         " · ${FileUtils.statusText(file.status)}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (file.status == "downloaded")
-                            MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = when (file.status) {
+                            "downloaded" -> MaterialTheme.colorScheme.primary
+                            "failed" -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                if (file.status == "failed") {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        stringResource(R.string.file_retry_hint),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-            TextButton(onClick = { viewModel.openPreview(file) }) {
-                Text("预览")
+            when {
+                file.status == "downloaded" -> TextButton(onClick = { viewModel.openPreview(file) }) {
+                    Text("预览")
+                }
+                file.status == "failed" || file.status == "remote_missing" ->
+                    TextButton(onClick = { viewModel.retryFile(file) }) {
+                        Text("重试")
+                    }
+                else -> Text(
+                    stringResource(R.string.file_pending),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
             }
             IconButton(onClick = { viewModel.shareFile(file) }) {
                 Icon(
@@ -764,6 +870,15 @@ private fun SettingsView(viewModel: AppViewModel, loginState: LoginState) {
                     )
                 }
             }
+            Spacer(Modifier.height(8.dp))
+            // 上次同步结果（含失败原因）：让用户能判断资料是否真的同步成功
+            val dataVersion by viewModel.dataVersion.collectAsState()
+            val lastSummary = remember(dataVersion) { viewModel.lastSyncSummary() }
+            Text(
+                "上次同步：$lastSummary",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         item {
             SectionTitle("本地存储")
@@ -782,10 +897,50 @@ private fun SettingsView(viewModel: AppViewModel, loginState: LoginState) {
                     )
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        "已下载文件可直接在应用内预览（PDF、图片、文本、音视频、Office 降级预览），" +
-                            "也可通过系统分享面板分享。",
+                        "已下载文件可直接在应用内预览（PDF、图片、文本、音视频，Office 六格式逐页渲染），" +
+                            "图表、SmartArt、嵌入对象等暂不支持高保真的元素会显示说明，"
+                            + "也可通过系统分享面板交给其他工具处理。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        item {
+            SectionTitle("关于")
+            Card(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("复小学", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "版本 ${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "用于同步并管理你有权访问的复旦大学 eLearning/Canvas 课程资料。"
+                            + "支持 UIS 账号登录、定时增量同步与应用内预览。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "应用内预览：PDF、图片（含 GIF/HEIF）、文本/CSV（2MiB 上限）、"
+                            + "音视频（Media3），以及 doc/docx/ppt/pptx/xls/xlsx 的逐页渲染。"
+                            + "图表、SmartArt、OLE 嵌入与动画等复杂元素只做限制说明，不保证高保真还原。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "项目地址：github.com/lsx626/fuxiaoxue",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
             }

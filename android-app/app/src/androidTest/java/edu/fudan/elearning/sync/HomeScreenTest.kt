@@ -82,9 +82,15 @@ class HomeScreenTest {
         repo.close()
 
         vm = AppViewModel(ctx as Application)
-        // 反射设置公共 StateFlow（界面读的是这些公共字段）
-        setField(vm, "loginState", MutableStateFlow<LoginState>(LoginState.LoggedIn("20260001")))
-        setField(vm, "courses", MutableStateFlow(Repo(ctx).courseStats()))
+        // 登录态没有公开 setter（真实路径是走 UIS 登录），这里只能反射注入；
+        // 公开字段与私有 backing flow 都要替换，界面读公开字段、内部派生读私有流。
+        val login = MutableStateFlow<LoginState>(LoginState.LoggedIn("20260001"))
+        setField(vm, "_loginState", login)
+        setField(vm, "loginState", login)
+        // 课程数据走**真实路径**（refreshCourses 从 SQLite 读演示数据），
+        // 不再反射替换：否则 ViewModel 内部在 init 时派生的 selectedCourse
+        // 仍绑定在原来的 _courses 上，点进课程永远打不开文件列表。
+        vm.refreshCourses()
     }
 
     private fun setField(obj: Any, name: String, value: Any) {
@@ -188,19 +194,22 @@ class HomeScreenTest {
         composeRule.onNodeWithText("账号").assertExists()
         composeRule.onNodeWithText("已登录").assertExists()
         composeRule.onNodeWithText("20260001").assertExists()
-        composeRule.onNodeWithText("同步频率（分钟）").assertExists()
-        composeRule.onNodeWithText("15").assertExists()
-        composeRule.onNodeWithText("120").assertExists()
+        composeRule.onNodeWithText("后台同步频率").assertExists()
+        composeRule.onNodeWithText("15 分钟").assertExists()
+        composeRule.onNodeWithText("120 分钟").assertExists()
     }
 
     @Test
     fun courseDetail_showsChineseFileStatus() {
         launch()
         tapText("普通化学A（上）")
-        // 列表展示 file.name（"绪论"），状态行含中文化的"已下载"
+        // 文件行把「大小」和「状态」渲染成两个独立 Text 节点，
+        // 因此必须分别断言，不能拼成 "1.2 MB · 已下载" 去匹配单个节点。
         composeRule.onNodeWithText("绪论").assertExists()
-        composeRule.onNodeWithText("1.2 MB · 已下载").assertExists()
-        composeRule.onNodeWithText("2.2 MB · 待下载").assertExists()
+        composeRule.onNodeWithText("1.2 MB").assertExists()
+        composeRule.onNodeWithText("已下载", substring = true).assertExists()
+        composeRule.onNodeWithText("2.2 MB").assertExists()
+        composeRule.onNodeWithText("待下载", substring = true).assertExists()
     }
 
     @Test

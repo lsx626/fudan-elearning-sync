@@ -18,9 +18,11 @@ data class FileItem(
     val folderPath: String = "",
     val localPath: String = "",
     val size: Long = 0,
-    val status: String = "pending", // pending / downloaded / skipped
+    val status: String = "pending", // pending / downloaded / failed / remote_missing
     val downloadedAt: String? = null,
-    val url: String = ""
+    val url: String = "",
+    /** 远端 `updated_at`；增量同步据此判断「同大小但内容已更新」。 */
+    val updatedAt: String = ""
 )
 
 /** 同步运行记录 */
@@ -30,7 +32,10 @@ data class SyncRun(
     val finishedAt: String? = null,
     val mode: String = "incremental",
     val filesDownloaded: Int = 0,
-    val bytesDownloaded: Long = 0
+    val bytesDownloaded: Long = 0,
+    val filesFailed: Int = 0,
+    /** 失败原因（成功时为空）。用于历史记录与排障，不含凭据。 */
+    val error: String = ""
 )
 
 /** 课程统计（列表页展示用） */

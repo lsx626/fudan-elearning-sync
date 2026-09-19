@@ -55,6 +55,19 @@ class AppConfig:
         return self.base_url.rstrip("/") + "/api/v1"
 
 
+def _normalize_ext(value: Any) -> str:
+    """
+    统一排除扩展名的写法：小写、去空白、并且总是带前导点。
+
+    引擎用 `os.path.splitext(name)[1]` 比较（形如 ".exe"），而 GUI 历史配置里
+    存的是 "exe"；不归一化会让排除规则静默失效（用户以为排除了，实际照下）。
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return text if text.startswith(".") else "." + text
+
+
 def _deep_get(data: Dict[str, Any], *keys, default=None):
     node = data
     for key in keys:
@@ -133,8 +146,12 @@ def load_config(path: str) -> AppConfig:
             max_file_size_mb=float(_deep_get(sync_data, "download", "max_file_size_mb", default=0)),
             min_free_space_gb=float(_deep_get(sync_data, "download", "min_free_space_gb", default=1)),
             exclude_extensions=[
-                str(e).lower() for e in (_deep_get(sync_data, "download",
-                                                    "exclude_extensions", default=[]) or [])
+                # 统一规范：小写、去空白、并且**总是带前导点**。
+                # 引擎用 os.path.splitext() 得到的是 ".exe" 这类带点形式，
+                # 而 GUI 历史上会把用户输入存成 "exe"，导致排除规则永远匹配不上。
+                _normalize_ext(e) for e in (_deep_get(sync_data, "download",
+                                                      "exclude_extensions", default=[]) or [])
+                if _normalize_ext(e)
             ],
             exclude_folders=[
                 str(f).strip().lower() for f in

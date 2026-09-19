@@ -7,9 +7,12 @@ import java.util.Collections
 /**
  * 页面位图缓存：按字节数预算的 LRU。展示中的页会被 [pin] 住，淘汰时不回收，
  * 避免渲染到已 recycle 的位图导致崩溃；离开可视区后 [unpin]，可被正常回收。
+ *
+ * 预算按设备堆大小自适应（堆的 1/8，夹在 32–96 MiB），既能在低内存设备上留出
+ * 解码余量，也能让大屏设备少重复渲染。
  */
 class PageBitmapCache(
-    maxBytes: Int = DEFAULT_MAX_BYTES
+    maxBytes: Int = defaultMaxBytes()
 ) {
     private val pinned: MutableSet<Int> =
         Collections.synchronizedSet(Collections.newSetFromMap(HashMap()))
@@ -40,6 +43,11 @@ class PageBitmapCache(
     }
 
     companion object {
-        private const val DEFAULT_MAX_BYTES = 48 * 1024 * 1024 // 48 MiB
+        private const val MIN_MAX_BYTES = 32L * 1024 * 1024
+        private const val MAX_MAX_BYTES = 96L * 1024 * 1024
+
+        /** 位图缓存预算：堆的 1/8，最低 32 MiB、最高 96 MiB。 */
+        fun defaultMaxBytes(maxHeapBytes: Long = Runtime.getRuntime().maxMemory()): Int =
+            (maxHeapBytes / 8).coerceIn(MIN_MAX_BYTES, MAX_MAX_BYTES).toInt()
     }
 }

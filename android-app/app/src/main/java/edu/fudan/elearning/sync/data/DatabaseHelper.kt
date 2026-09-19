@@ -5,9 +5,15 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
-/** 本地 SQLite 数据库：课程与文件状态。 */
+/**
+ * 本地 SQLite 数据库：课程与文件状态。
+ *
+ * 迁移规则（硬性）：**发布后任何 schema 变更都必须是非破坏性迁移**。
+ * `onUpgrade` 逐版本执行增量步骤，绝不 DROP 用户数据；只有从 v0
+ * （异常/损坏状态）升级时才回退到重建。
+ */
 class DatabaseHelper(context: Context) :
-    SQLiteOpenHelper(context, "fudan_sync.db", null, 1) {
+    SQLiteOpenHelper(context, "fudan_sync.db", null, SCHEMA_VERSION) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -31,6 +37,7 @@ class DatabaseHelper(context: Context) :
                 status TEXT DEFAULT 'pending',
                 downloaded_at TEXT,
                 url TEXT DEFAULT '',
+                updated_at TEXT DEFAULT '',
                 FOREIGN KEY(course_id) REFERENCES courses(id) ON DELETE CASCADE
             )"""
         )
@@ -41,15 +48,53 @@ class DatabaseHelper(context: Context) :
                 finished_at TEXT,
                 mode TEXT DEFAULT 'incremental',
                 files_downloaded INTEGER DEFAULT 0,
-                bytes_downloaded INTEGER DEFAULT 0
+                bytes_downloaded INTEGER DEFAULT 0,
+                files_failed INTEGER DEFAULT 0,
+                error TEXT DEFAULT ''
             )"""
         )
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS files")
-        db.execSQL("DROP TABLE IF EXISTS courses")
-        db.execSQL("DROP TABLE IF EXISTS sync_runs")
-        onCreate(db)
+        if (oldVersion < 1) {
+            // v0 不是任何已发布形态，按全新库处理
+            onCreate(db)
+            return
+        }
+        if (oldVersion < 2) migrateV1ToV2(db)
+    }
+
+    override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // 不删除数据：降级安装（例如回滚 APK）时保留用户资料，缺失列由读取侧
+        // 的默认值兜底，避免「装回旧版本就清空课程」。
+    }
+
+    /** v1 -> v2：补远端更新时间与同步失败信息（只加列，不动数据）。 */
+    private fun migrateV1ToV2(db: SQLiteDatabase) {
+        addColumnIfMissing(db, "files", "updated_at", "TEXT DEFAULT ''")
+        addColumnIfMissing(db, "sync_runs", "files_failed", "INTEGER DEFAULT 0")
+        addColumnIfMissing(db, "sync_runs", "error", "TEXT DEFAULT ''")
+    }
+
+    private fun addColumnIfMissing(db: SQLiteDatabase, table: String, column: String, spec: String) {
+        if (hasColumn(db, table, column)) return
+        runCatching { db.execSQL("ALTER TABLE $table ADD COLUMN $column $spec") }
+    }
+
+    private fun hasColumn(db: SQLiteDatabase, table: String, column: String): Boolean {
+        return runCatching {
+            db.rawQuery("PRAGMA table_info($table)", null).use { cursor ->
+                val nameIndex = cursor.getColumnIndex("name")
+                while (cursor.moveToNext()) {
+                    if (nameIndex >= 0 && cursor.getString(nameIndex) == column) return true
+                }
+                false
+            }
+        }.getOrDefault(false)
+    }
+
+    companion object {
+        /** 当前 schema 版本。v2 新增 files.updated_at 与 sync_runs 的失败信息。 */
+        const val SCHEMA_VERSION = 2
     }
 }

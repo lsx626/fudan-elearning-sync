@@ -3,4 +3,24 @@
     <string name="app_name">复小学</string>
     <string name="notification_channel_sync">同步通知</string>
     <string name="notification_channel_sync_desc">课程文件同步状态通知</string>
+    <string name="preview_jump_button">跳页</string>
+    <string name="preview_back_top">回到页首</string>
+    <string name="preview_jump_page">跳到第几页？（共 %1$d 页）</string>
+    <string name="preview_jump_hint">输入页码</string>
+    <string name="preview_jump_confirm">跳转</string>
+    <string name="preview_cancel">取消</string>
+    <string name="preview_zoom_reset">重置缩放</string>
+    <string name="preview_open_other">用其他应用打开</string>
+    <string name="preview_page_indicator">第 %1$d / %2$d 页</string>
+    <string name="parsing_progress">正在解析… %1$d / %2$d</string>
+    <string name="office_limitation_note">已按版式还原页面，包括自动形状、连接线箭头与组合形状；图表、SmartArt、OLE 嵌入、视频与动画等元素以占位卡标注，可通过右上角分享给其他工具做高保真查看。</string>
+    <string name="sync_error_title">同步未完成</string>
+    <string name="action_close">关闭</string>
+    <string name="action_retry">重试</string>
+    <string name="menu_more">更多操作</string>
+    <string name="menu_sync_now">立即同步</string>
+    <string name="menu_sync_full">全量同步（重新下载全部文件）</string>
+    <string name="menu_refresh">刷新列表</string>
+    <string name="file_retry_hint">可点「重试」重新下载，或稍后同步自动重试</string>
+    <string name="file_pending">同步中</string>
 </resources>

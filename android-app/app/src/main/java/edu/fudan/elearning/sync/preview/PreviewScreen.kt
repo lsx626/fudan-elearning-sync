@@ -17,7 +17,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import edu.fudan.elearning.sync.R
 import edu.fudan.elearning.sync.office.OfficePreviewScreen
 import java.io.File
 
@@ -26,14 +28,21 @@ import java.io.File
  *
  * 这是 FileUtils.openFile() 的应用内目标，取代原来的 ACTION_VIEW 跳转。
  * 保留分享入口（仅授予临时只读 URI 权限）。
+ *
+ * [displayName] 为列表中显示的文件名（Canvas display_name），顶栏标题以它为准；
+ * 空值时兜底用磁盘文件名。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PreviewScreen(
     file: File,
+    displayName: String = file.name,
     onBack: () -> Unit,
     onShare: (File) -> Unit
 ) {
+    val title = remember(displayName, file.name) {
+        displayName.ifBlank { file.name }
+    }
     val kind = remember(file.absolutePath) {
         if (!file.exists()) PreviewKind.UNSUPPORTED else FileTypes.detect(file)
     }
@@ -44,7 +53,7 @@ fun PreviewScreen(
             TopAppBar(
                 title = {
                     Text(
-                        file.name,
+                        title,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -74,16 +83,22 @@ fun PreviewScreen(
                     message = "暂不支持在应用内预览此格式（" +
                         FileTypes.extOf(file.name).ifEmpty { "未知类型" } +
                         "）。可通过右上角分享，交给其他应用打开。",
-                    title = "不支持的格式"
+                    title = "不支持的格式",
+                    actionLabel = stringResource(R.string.preview_open_other),
+                    onAction = { onShare(file) }
                 )
                 else -> when (kind) {
                     PreviewKind.PDF -> PdfPreviewScreen(file)
                     PreviewKind.IMAGE -> ImagePreviewScreen(file)
                     PreviewKind.TEXT -> TextPreviewScreen(file)
                     PreviewKind.MEDIA -> MediaPreviewScreen(file)
-                    PreviewKind.OFFICE -> OfficePreviewScreen(file)
-                    PreviewKind.STRUCTURED -> OfficeFallbackScreen(file)
-                    PreviewKind.UNSUPPORTED -> PreviewError("不支持的格式")
+                    PreviewKind.OFFICE -> OfficePreviewScreen(file, title)
+                    PreviewKind.STRUCTURED -> OfficeFallbackScreen(file, title)
+                    PreviewKind.UNSUPPORTED -> PreviewError(
+                        message = "暂不支持在应用内预览此格式。",
+                        actionLabel = stringResource(R.string.preview_open_other),
+                        onAction = { onShare(file) }
+                    )
                 }
             }
         }

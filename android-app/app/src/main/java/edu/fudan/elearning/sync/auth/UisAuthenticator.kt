@@ -18,7 +18,9 @@ import javax.crypto.Cipher
 /** 登录会话：Cookie 与 CSRF token。 */
 data class AuthSession(
     val canvasSessionCookie: String,
-    val csrfToken: String?
+    val csrfToken: String?,
+    /** 会话 Cookie 名：`_normandy_session` 或 `_canvas_session`。 */
+    val cookieName: String = "_normandy_session"
 )
 
 /** 登录结果封装。 */
@@ -189,15 +191,21 @@ class UisAuthenticator(
             Request.Builder().url("$baseUrl/").get().build()
         ).execute()
         val body = homeResp.body?.string() ?: ""
-        val canvasCookie = cookieJar.cookies
-            .firstOrNull { it.name == "_normandy_session" }?.value ?: ""
+        // Canvas 在不同部署/登录路径下会下发 _normandy_session 或 _canvas_session，
+        // 两者都必须接受，否则会出现「密码正确却提示登录失败」。
+        val sessionCookie = cookieJar.cookies
+            .firstOrNull { it.name == "_normandy_session" }
+            ?: cookieJar.cookies.firstOrNull { it.name == "_canvas_session" }
+        val canvasCookie = sessionCookie?.value ?: ""
         if (canvasCookie.isEmpty()) {
             return LoginResult.Failure("登录未成功，请检查账号密码")
         }
         val csrf = Regex("""<meta\s+name="csrf-token"\s+content="([^"]+)"""")
             .find(body)?.groupValues?.get(1)
 
-        return LoginResult.Success(AuthSession(canvasCookie, csrf))
+        return LoginResult.Success(
+            AuthSession(canvasCookie, csrf, sessionCookie?.name ?: "_normandy_session")
+        )
     }
 
     private fun rsaEncrypt(publicKeyB64: String, plaintext: String): String {

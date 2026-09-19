@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
         self._auto_sync_remaining = 0  # 距下次自动同步的秒数
         self._course_index = 0         # 当前同步到的课程序号（进度条用）
         self._quitting = False
+        self._quit_pending = False
         self._current_file_course_id: Optional[int] = None  # 当前展开文件列表的课程 ID
 
         self.setObjectName("root")
@@ -1053,10 +1054,39 @@ class MainWindow(QMainWindow):
                          "已在后台运行，课程文件会自动保持同步。右键托盘图标可退出。")
 
     def _quit(self) -> None:
+        """
+        退出：先请同步线程协作停止，停不下来就稍后重试，绝不强杀线程。
+
+        历史实现只等 5 秒就继续销毁窗口，仍在运行的 QThread 会触发
+        “QThread: Destroyed while thread is still running” 并在退出时崩溃。
+        这里改为把退出延后，直到线程真正结束（同步请求有超时上限，不会无限等）。
+        """
+        worker = self.sync_worker
+        if worker is not None and worker.isRunning():
+            worker.stop()
+            if not worker.wait(5000):
+                self._quit_pending = True
+                self.tray.notify(
+                    "正在安全停止同步…",
+                    "同步线程结束后会自动退出；也可以继续在托盘里使用。",
+                )
+                QTimer.singleShot(2000, self._retry_quit)
+                return
+        self._finish_quit()
+
+    def _retry_quit(self) -> None:
+        """等待同步线程结束的轮询；仍在运行就继续等，不做任何强制终止。"""
+        if not self._quit_pending:
+            return
+        worker = self.sync_worker
+        if worker is not None and worker.isRunning():
+            QTimer.singleShot(2000, self._retry_quit)
+            return
+        self._finish_quit()
+
+    def _finish_quit(self) -> None:
+        self._quit_pending = False
         self._quitting = True
-        if self.sync_worker is not None and self.sync_worker.isRunning():
-            self.sync_worker.stop()
-            self.sync_worker.wait(5000)
         self._save_geometry()
         self.tray.tray.hide()
         self.close()

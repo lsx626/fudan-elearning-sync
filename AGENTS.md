@@ -19,6 +19,18 @@
 当前 GitHub 远端为 `https://github.com/lsx626/fuxiaoxue.git`，主分支为 `main`。只有在用户明确要求提交或上传时才提交、推送；推送前必须再次检查差异和敏感文件。
 
 项目所有者已明确提出长期交付要求：持续完成整项目检查、修复、功能补齐和发布验收，并将成果上传到上述 GitHub 仓库。`v1.0.5` 与 `v1.0.6` 是已发布的阶段版本。`v1.0.6` 修复了桌面端下载鉴权导致的同步失败、桌面设置页布局与用户名截断问题，并补齐了 Android 应用内预览（PDF/图片/文本/音视频/Office 结构化降级）与 Android 界面重绘；但不代表最初的全部双端需求已经完成：Android 分页/限流/可靠下载（`.part`、续传、原子替换）等 P0 缺口必须继续如实保留。每次上传前都要复核目标分支、敏感文件和产物，上传后反馈 commit SHA、标签和 Release 地址。v1.0.7（仅 Android）实装了文件分享（修复 ApplicationContext 启动崩溃、修正 OOXML MIME）、Office 六格式（doc/docx/ppt/pptx/xls/xlsx）应用内逐页渲染（POI 解析 + Canvas 绘制）、PDF/Office 纵向连续滚动与双指缩放；Office 图表/SmartArt/OLE 等复杂元素仍只做限制说明，不做高保真还原。`v1.0.8`（仅 Android）在 v1.0.7 基础上补齐 Word 的「完整页面」：`.doc`/`.docx` 现在提取内嵌图片、表格（可跨页切分）与逐段字符格式（字号/颜色/加粗/斜体/下划线），并修正 `.docx` 图片尺寸单位（`XWPFPicture.getWidth()/getDepth()` 返回磅而非 EMU，旧换算有误）；六格式均为应用内逐页完整渲染，而非纯文字提取。
+`v1.0.9`（仅 Android）修复预览体验五件事：一是大 PPT/PPTX 解析失败——POI 的单记录 100 MiB 安全上限（`IOUtils`）在含超大内嵌记录的文档上被触发，现按设备内存自适应放宽上限并给出内存不足的友好说明（不再暴露原始异常串），大文档自动降低渲染分辨率、内嵌大图入库前降采样、页位图缓存按堆大小预算；二是 PowerPoint 形状保真——自动形状（含无文字装饰形状、填充/描边/旋转）、连接线箭头、组合形状递归平移现在会渲染，图表/SmartArt/OLE/视频改为应用内占位卡加限制说明（不做高保真还原）；三是系统返回键——预览与文件列表层均接 `BackHandler`，且课程选中状态上提到 `AppViewModel`，预览返回后仍在原文件列表；四是预览顶栏文件名乱码——顶栏改用列表显示名（Canvas `display_name`），`sanitize` 落盘前做安全百分号解码；五是补「关于」页、预览页跳页/回到页首与失败时的「用其他应用打开」入口。可靠性缺口（Canvas 分页/限流/重试、`.part` 续传与原子落盘）仍保留，列入 v1.0.10。
+
+`v1.0.10` 补齐上一版留下的可靠性缺口，并同步修桌面端 P1 缺陷（桌面端版本号随之升到 `1.0.7`，但**本轮未重新打包安装器**，见第 22 节流程）：
+
+- Android `CanvasApi`：Link 分页 + 串行低频 + 429/`Retry-After` + 剩余额度减速 + 指数退避，失败抛 `ApiException` 子类，绝不再用「空列表」冒充成功（`CanvasApiTest`）。
+- Android 可靠下载：`.part` + Range 续传 + 长度校验 + 原子改名 + 同名避让 + 退避重试 + 登录页嗅探（`DownloadPlanTest`）。
+- Android 同步语义：课程/文件列表失败显式报错并计入 `failedCourses`，只有列表完整成功才标记 `remote_missing`，且只改状态不删本地文件；手动同步与后台 Worker 用 `SyncGate` 互斥；退出登录会取消后台任务（`SyncPolicyTest`）。
+- Android 增量与迁移：增量加入 `updated_at` 与本地存在性判定；schema v2 非破坏性迁移（只加列，`onDowngrade` 不动数据）。
+- Android UI：同步失败横幅（说明原因 + 重试/关闭）、顶栏「全量同步/刷新列表」、失败文件「重试」、设置页显示上次同步结果、列表缓存改为按数据版本刷新。
+- Android 会话：同时接受 `_normandy_session` 与 `_canvas_session`（`ApiClient.sessionCookieName` 贯穿登录与请求）。
+- Android 抓取能力对齐：`sync/CourseCrawler.kt` 按桌面端顺序抓取「文件主列表 → 目录树 → 模块 → 页面 → 作业 → 公告 → 大纲」，下载时按 Canvas 目录重建本地子目录、引用型文件自动补元数据、跨来源按 `file_id` 去重并保留首次发现的权威路径；远端目录名经 `DownloadPlan.safeRelativeDir` 逐组件清洗 + `isInside` 包含性校验，杜绝目录穿越。**删除闸门不变**：只有文件主列表完整成功（`filesListedOk`）才允许判定远端删除，模块/页面等来源失败只减少额外发现。
+- 桌面端：`StateStore` 写事务异常回滚；CLI `login --method cookie` 回写 `auth.method`；认证中间页错误文案不再携带响应正文（只留 HTTP 状态与长度）；退出时改为等待同步线程结束（不再强杀 QThread）；排除扩展名统一归一化为 `.ext`；版本入口（`VERSION`/`__init__`/`setup.iss`）与 README 对齐。
 
 ## 2. 信息优先级
 
@@ -53,10 +65,10 @@ Android 当前使用 `SQLiteOpenHelper` 而非 Room；应用内文档预览与�
 |---|---|---|---|
 | UIS 登录 | 已实现 | 已实现 | 两端协议保持一致 |
 | Token/Cookie/浏览器登录 | 已实现 | 未实现，非当前必需 | 桌面端保持 |
-| Canvas 分页与限流 | 已实现 | 分页和可靠重试未完整实现 | Android 对齐桌面端 |
-| 完整来源爬取 | 文件/目录/模块/页面/作业/公告/大纲 | 仅课程文件列表 | Android 逐步对齐 |
-| 可靠增量下载 | `.part`、续传、大小校验、原子替换 | 直接覆盖，缺少完整性保护 | Android 对齐关键安全能力 |
-| 应用内 PDF/Office/图片/文本预览 | 已实现，部分格式有降级 | `v1.0.7` 起：PDF 与 Office（doc/docx/ppt/pptx/xls/xlsx，POI 解析 + Canvas 逐页渲染）均为纵向连续滚动 + 双指/双击缩放；`.doc`/`.docx` 自 `v1.0.8` 起渲染内嵌图片、跨页表格与逐段字符格式（完整页面）；图片（含 GIF/HEIF）、文本/CSV（2MiB 上限）已实现；ODF/HTML 仍为结构化降级 | 两端对齐富文本渲染 |
+| Canvas 分页与限流 | 已实现 | `v1.0.10` 起已实现（Link 分页、最小间隔、429/`Retry-After`、剩余额度减速、可区分错误类型） | 保持两端一致 |
+| 完整来源爬取 | 文件/目录/模块/页面/作业/公告/大纲 | `v1.0.10` 起已对齐（目录重建 + 模块/页面/作业/公告/大纲的文件引用，正文归档仍仅桌面端） | 保持对齐（正文归档可选） |
+| 可靠增量下载 | `.part`、续传、大小校验、原子替换 | `v1.0.10` 起已实现（`.part` + Range 续传 + 长度校验 + 原子改名 + 同名避让 + 退避重试） | 两端共享同一套安全语义 |
+| 应用内 PDF/Office/图片/文本预览 | 已实现，部分格式有降级 | `v1.0.7` 起：PDF 与 Office（doc/docx/ppt/pptx/xls/xlsx，POI 解析 + Canvas 逐页渲染）均为纵向连续滚动 + 双指/双击缩放；`.doc`/`.docx` 自 `v1.0.8` 起渲染内嵌图片、跨页表格与逐段字符格式（完整页面）；`v1.0.9` 起 PPT 渲染自动形状/连接线箭头/组合形状，图表、SmartArt、OLE 与视频以占位卡加限制说明呈现，大文档（含超大内嵌记录）可解析；图片（含 GIF/HEIF）、文本/CSV（2MiB 上限）已实现；ODF/HTML 仍为结构化降级 | 两端对齐富文本渲染 |
 | 应用内音视频 | 已实现 | `v1.0.6` 起用 Media3/ExoPlayer 实现：播放/暂停、停止、±10 秒、进度拖动、音量、单曲循环、错误界面 | 保持 |
 | 分享 | 本地文件菜单已实现 | `v1.0.7` 起实装系统 ShareSheet：修复 ApplicationContext 启动崩溃、修正 OOXML MIME | 保持并补充错误处理 |
 | 后台同步 | 托盘定时同步 | WorkManager 周期同步 | 保持可靠、互斥、可观测 |
@@ -141,6 +153,27 @@ python -m venv .venv
 
 硬性要求：`fudan_sync/bootstrap.py` 只做能力探测，不允许通过修改 `PATH`、`QT_PLUGIN_PATH` 或拼接旧 DLL“修复”Qt。若导入失败，应重建干净环境并安装匹配依赖。
 
+桌面测试运行提示（Windows）：若 `%TEMP%\pytest-of-lsx` 或仓库内 `.pytest_cache` 的 ACL 已被破坏（表现为 `PermissionError: [WinError 5]`，且与源码无关），用下面这条命令绕开它们——把临时根放到可写位置并关闭缓存插件：
+
+```powershell
+cd elearning-sync
+.\.packaging-venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --basetemp="$env:TEMP\fxx-pytest-bt"
+```
+
+`v1.0.7` 起桌面测试基线为 **68 passed**（含新增 `tests/test_desktop_p1_fixes.py`）。
+
+### 5.4 构建 JDK（2026-09-19 起的关键约束）
+
+Android Studio 从 261.x 起自带 **JBR 25**，而 Gradle 8.13 / AGP 8.13.0 **不支持 JDK 25**：配置阶段就会失败，错误信息是 `* What went wrong: 25.0.3`（堆栈里是 Kotlin 的 `JavaVersion.parse` 抛 `IllegalArgumentException`）。**这与源码无关**，必须让 Gradle 跑在 JDK 17–21 上：
+
+```powershell
+# 命令行（本轮验证用的 Temurin 21 解压在临时目录）
+$env:JAVA_HOME = "$env:TEMP\jdk21\jdk-21.0.12.1+1"
+cd android-app; .\gradlew.bat --offline --console=plain :app:assembleDebug
+```
+
+Android Studio 里对应设置为：**Settings → Build, Execution, Deployment → Build Tools → Gradle → Gradle JDK → 选择 JDK 21**（`Download JDK…` 也可；**不要**继续用 Android Studio 自带 JBR，否则同样报 25.0.3）。长期方案是把 Android Studio 的 Gradle JDK 固定到 21，或在升级 Gradle/AGP 到支持 JDK 25 的版本后移除该约束。
+
 ### 5.2 Android
 
 构建基线：
@@ -203,10 +236,10 @@ CLI 默认使用当前目录的 `config.yaml`，GUI 可能使用用户数据目�
 
 - 普通设置：应用私有 `SharedPreferences("fudan_sync")`。
 - 密码：Android Keystore + AES-256-GCM 加密后存私有偏好。
-- 数据库：应用私有 `fudan_sync.db`，当前 schema 版本 1。
+- 数据库：应用私有 `fudan_sync.db`，当前 schema 版本 2（`v1.0.10` 起新增 `files.updated_at` 与 `sync_runs.files_failed`/`error`）。
 - 下载：应用专属外部目录 `<external-files>/elearning/`，卸载应用时通常由系统删除。
 
-当前 `onUpgrade()` 会删表重建。发布后任何 schema 变更必须改为显式、可回滚思考过的非破坏性迁移，并补迁移测试。
+`v1.0.10` 起 `onUpgrade()` 按版本逐步执行非破坏性迁移（`ALTER TABLE ADD COLUMN`，并对已存在列做幂等判断），`onDowngrade()` 故意不动数据；只有 `oldVersion < 1`（从未发布过的异常状态）才回退到重建。**后续任何 schema 变更都必须沿用这一模式**，不得改回删表重建。
 
 ### 6.3 敏感文件和生成物
 
@@ -346,7 +379,7 @@ PC 和 Android 必须保持同一协议契约：
 - 分页必须原样跟随响应 `Link` 中的 `rel=next`；该 URL 是不透明值，不得自行重建页码或 bookmark。
 - 只有第一页附初始 params，后续 next URL 已包含全部参数。
 
-Android 当前没有完整实现上述分页、退避和限流策略，最多请求 100 门课程和每课 200 个文件。这是可靠性缺口，改造时应抽取可测试的分页循环和错误类型，而不是把异常转成空列表。
+`v1.0.10` 起 Android 与桌面端对齐：`network/CanvasApi.kt` 原样跟随 `Link: rel="next"` 分页（`LinkHeader` 只挑 next，URL 视为不透明值），元数据请求经 `Mutex` 严格串行并保持最小间隔（默认 150ms），429 或含 `Rate Limit Exceeded` 的 403 尊重 `Retry-After`（缺省 8s），`X-Rate-Limit-Remaining < 15` 时追加减速，5xx/408/限流指数退避（500ms 起、30s 封顶、最多 4 次）。失败一律抛 `ApiException` 的具体子类（`Auth`/`RateLimited`/`Server`/`Network`/`Parse`），**绝不返回空列表冒充成功**；页数超过 `RequestPolicy.maxPages`（200）时明确报错而不是无限翻页。这些行为由 `CanvasApiTest`（假传输 + 假时钟，离线、12 个用例）覆盖。
 
 ## 11. 课程发现和爬取算法
 
@@ -417,7 +450,7 @@ Downloader 只处理同步引擎已经判定需要下载的任务，不能再次
 
 并发只用于文件内容下载，`ThreadPoolExecutor` 上限由配置控制。完成回调运行在线程上下文，不能直接操作 GUI。
 
-Android 当前直接写目标文件，缺少 `.part`、续传、长度校验、原子替换、重试和同名避让。补齐时应优先实现：临时文件 + 长度校验 + 原子替换 + 唯一命名，再实现断点续传和细化重试。
+`v1.0.10` 起 Android 与桌面端同构：`sync/DownloadManager.kt` 写 `目标.part`，已有断点时用 `Range` 续传（服务端返回 200 则从头重写，避免旧字节留在文件开头），已知远端大小时校验完整长度（不完整则保留断点），成功后同目录 `renameTo` 原子落盘（不支持时退化为复制后删除），失败按 500ms/1s/2s 指数退避重试（最多 3 次）。HTTP 401/403 与「HTML + 登录标记」的登录页嗅探会立刻判定为会话失效并**停止重试**；同名不同 `file_id` 通过 `DownloadPlan.uniqueDestination()` 避让成 `name (n).ext`，绝不覆盖。续传判定、长度校验、同名避让、登录页嗅探与退避数值由 `DownloadPlanTest` 覆盖。
 
 ## 14. 状态库与状态机
 
@@ -438,7 +471,7 @@ Android 当前直接写目标文件，缺少 `.part`、续传、长度校验、�
 - 表：`courses`、`files`、`sync_runs`。
 - Android 字段少于桌面端，状态和增量元数据也不完整。
 - 不允许把桌面数据库文件导入 Android，反之亦然。
-- 当前增量只比较 status 和 size；应补更新时间、本地存在性、可靠错误状态和迁移测试。
+- `v1.0.10` 起增量同时比较 status、size、远端 `updated_at`、本地文件是否存在与长度是否相符；失败状态写回 `failed` 供界面提示与重试；schema v2 迁移为只加列的非破坏性迁移。
 
 ## 15. GUI 线程、窗口和资源生命周期
 
@@ -536,7 +569,74 @@ Android 当前直接写目标文件，缺少 `.part`、续传、长度校验、�
 - 图片（Coil，含 GIF 动图与 HEIF，双指缩放 + 双击复位）、文本/CSV（`2 MiB` 上限流式读取 + 截断提示）、音视频（Media3/ExoPlayer，完整传输控制与错误界面）。
 - ODF/HTML 仍为结构化降级（轻量文本抽取 + 明确限制说明）。
 
+`v1.0.9` 起在同一预览链路上补齐预览体验：
+
+- **PPT 形状保真**：自动形状（含**无文字的装饰形状**、填充/描边/旋转）、连接线（含箭头端点，允许高或宽为 0 的水平/垂直直线）、组合形状（递归展开，子坐标按组合锚点平移，**组内缩放不还原**属已知限制）都会渲染；图表 / SmartArt / OLE 嵌入 / 视频输出 `PageItem.Placeholder` 占位卡 + 限制说明，不做高保真还原。文本框还原内边距与垂直对齐。
+- **大文件可解析**：`App.onCreate` 调 `OfficeExtractor.applyPoiLimits()`，把 POI 的单记录上限按堆大小自适应放宽到 `100–384 MiB`（`IOUtils.setByteArrayMaxOverride`，初始缓冲压到 1 MiB）。单记录超限或 OOM 会转成可读说明（`OfficeLimits.MEMORY_HINT`），不再把「Tried to allocate an array of length …」原始异常串暴露给用户；取消（离开预览）原样抛出，绝不当成解析失败。
+- **可进度可取消**：`OfficeExtractor.extract()` 是 `suspend`，内部切到 `Dispatchers.IO`，逐张幻灯片回调 `(已完成, 总数)`，预览页显示「正在解析… n/m」。
+- **内存控制**：文件 > 16 MiB 时渲染宽度降到 1080–1440px；页数 > 60 时页模型整体缩放到 75%；单页长边 > 4096px 时先缩模型再渲染（旧实现直接返回「该页无法渲染」）；内嵌图片 > 2 MiB 先降采样再入库；`PageBitmapCache` 预算改为堆的 1/8（32–96 MiB）。
+- **导航与文案**：`BackHandler` 覆盖预览与文件列表层，课程选中状态上提到 `AppViewModel`（预览返回后仍在原文件列表）；顶栏用列表显示名（Canvas `display_name`）；预览页有跳页 / 回到页首 / 重置缩放，失败页有「用其他应用打开」按钮；设置页新增「关于」。
+
 仍缺：HTML 富文本渲染（当前显示源文本）、Office 图表/SmartArt/OLE 等复杂元素的高保真还原；损坏文件与不支持格式的降级已有插桩测试覆盖（corruptFile_reportsFailureNotCrash、officePreview_corruptShowsErrorPage），音视频 codec 不支持的端到端测试仍缺。
+
+**POI 实色两种类型（易错点，已实证）**：POI 的实色既可能返回 `ColorStyle`（主题色/配色变换），也可能返回 `PaintStyle.SolidPaint`（直接 RGB，实现类是 `DrawPaint.SimpleSolidPaint`）。XSLF 的描边色与逐段文字颜色走的是后者：只判断 `paint is ColorStyle` 会让所有 PPT 描边与文字颜色静默丢失（`v1.0.9` 前就是这个缺陷）。`SlideExtractor.paintArgb()` 必须两种都处理。
+
+**POI 图表夹具（影响测试）**：`XSLFSlide.addChart()` 不会立刻把图形框挂到幻灯片上，只有 `write()` 之后才能读到该 `XSLFGraphicFrame`（`hasChart()==true`）。构造含图表的夹具必须用 `show.createChart(slide)`，并在写盘后重新打开文件再断言。
+
+**非 ASCII 工程路径会使 Gradle 单元测试 worker 失败（本机环境限制）**：本仓库路径含中文（`D:\Projects\学习资料自动收集`）。Gradle 把测试 worker 的 classpath 写入 UTF-8 的 `@argfile`，而 Windows 上 JDK 启动器按 ANSI 代码页解码该文件，结果测试类全部报 `ClassNotFoundException`（连未被改动的测试也失败，可作为判据）。可行做法是把 `android-app` 复制到纯 ASCII 路径（例如 `%TEMP%\fxx-ut`）后再跑 `gradlew testDebugUnitTest`；或在 Windows 开启「Beta: 使用 Unicode UTF-8 提供全球语言支持」。这与源码缺陷无关，不要据此改动业务代码。
+
+### 17.1 设备端插桩测试（`v1.0.10` 实测基线）
+
+2026-09-19 在 API 36.1 模拟器上跑通全部四类插桩测试，**23 个用例全绿**：
+
+| 测试类 | 用例数 | 覆盖 |
+|---|---|---|
+| `office.OfficeRendererInstrumentedTest` | 10 | POI 六格式解析 + Canvas 渲染 + 形状/连接线/组合/图表占位卡 + 损坏文件降级 |
+| `office.OfficePreviewUiTest` | 2 | Office 预览页组合（页脚页码、保真度提示卡、损坏文件错误页） |
+| `HomeScreenTest` | 8 | 课程/存储/设置三页、中文状态、学期筛选、导航 |
+| `data.DatabaseMigrationInstrumentedTest` | 3 | 全新安装 schema、v1→v2 迁移保留数据、同步失败信息落库 |
+
+**无头模拟器**（本机实测可用的参数组合，缺 `-feature -Vulkan` 会因 SwiftShader 的 Vulkan 设备创建失败而立刻退出）：
+
+```powershell
+& 'D:\Sdk\emulator\emulator.exe' -avd fxx_test_api36 -no-window -no-audio -no-boot-anim `
+  -gpu swiftshader_indirect -feature -Vulkan -no-snapshot-load -ports 5554,5555
+```
+
+**不走 Gradle 跑插桩测试**（Gradle/JDK 出问题时的备用通道，也是本轮实际使用的方式）：
+
+```powershell
+adb install -r -t app\build\outputs\apk\debug\app-debug.apk
+adb install -r -t app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk
+adb shell am instrument -w -r -e class edu.fudan.elearning.sync.office.OfficeRendererInstrumentedTest `
+  edu.fudan.elearning.sync.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+**`v1.0.10` 由设备端测试发现、JVM 测试永远发现不了的两个真实缺陷**（修好后才有上面的绿色基线）：
+
+1. `DatabaseHelper.onCreate()` 只建了 v1 列，**全新安装**首次写入 `files.updated_at` 直接抛
+   `SQLiteException: table files has no column named updated_at` —— 即新用户第一次同步必崩。
+   规则：**`onCreate` 与 `onUpgrade` 必须同步维护**，新增列两处都要有；`DatabaseMigrationInstrumentedTest` 已锁定。
+2. `java.awt` 桩缺方法导致 `org.apache.poi.sl.draw.DrawPaint` 静态初始化失败，进而在设备上
+   **把 PPT 的填充与描边全部静默丢弃**（`SlideExtractor` 的 `runCatching` 把异常吞掉了）。
+   根因在 logcat：`Rejecting re-init on previously-failed class ... NoSuchMethodError: No direct method <init>(FFFF)V in class Ljava/awt/Color;`。
+   已补：`Color` 的 `(FFFF)V`/`(I Z)V` 构造器、`getRGBComponents`/`getRGBColorComponents`/`getComponents`/`getColorComponents`、小写预定义色常量；
+   新增 `java.awt.Paint/Shape/Graphics2D/RenderingHints/MultipleGradientPaint/LinearGradientPaint/RadialGradientPaint`、`java.awt.image.BufferedImage/IndexColorModel`、`java.awt.geom.AffineTransform` 桩。
+
+**写设备端夹具的规矩**：不要用 POI 的 AWT 写 API（`setFillColor`/`setLineColor`/`setLineDecoration` 等），
+它们在 Android 上依赖的 AWT 面比读取路径宽得多。直接写 OOXML，等价于真实文档，也更稳：
+
+```kotlin
+val spPr = (shape.xmlObject as CTShape).spPr
+spPr.addNewSolidFill().addNewSrgbClr().setVal(byteArrayOf(0x4F, 0x46, 0xE5.toByte()))
+spPr.addNewLn().setW(38100)   // 12700 EMU = 1pt
+spPr.ln.addNewSolidFill().addNewSrgbClr().setVal(byteArrayOf(0, 0, 0))
+spPr.ln.addNewTailEnd().setType(STLineEndType.TRIANGLE)
+```
+
+**排查设备专属类加载问题的固定套路**：现象是测试里看到外层 `NoClassDefFoundError`，但根因在 logcat 的
+`Rejecting re-init on previously-failed class` 行（会给出真正的 `NoSuchMethodError`/`NoSuchFieldError`）。
+先用 `adb logcat -c` 清空，跑一次失败用例，再 `adb logcat -d | Select-String "previously-failed|Caused by"`。
 
 **POI 与 java.* 桩（硬性约束，已实证）**：Android 平台（`android.jar`）**没有** `java.awt`、`javax.xml.stream`、`javax.xml.catalog`（用 zip 条目枚举 `android-36/android.jar` 确认为 0 个），而 Apache POI 与 xmlbeans 的 API 签名与字节码都引用了它们；`app/src/awtstub/java/` 提供满足其调用面的最小桩**源码**，包名声明为 `java.awt`/`java.awt.geom`/`javax.xml.stream`/`javax.xml.catalog`，以及仅为编译桩源码而存在的 `javax.xml.namespace`。该 jar 必须以 `implementation`（**不是** `runtimeOnly`）引入：`android.jar` 完全不含 `java.awt`，编译期符号只能由本桩提供；已实测改用 `runtimeOnly` 会让 `compileDebugKotlin` 对全部 `java.awt.*` 引用报 `Cannot access class`。
 
@@ -1176,24 +1276,31 @@ UI 改动完成后必须实际运行并截图检查关键尺寸；仅阅读代�
 
 ### P0：完整产品要求验收前必须处理
 
-1. Android 实现应用内 PDF/Office/图片/文本预览和音视频播放器；当前外部 Intent 不符合产品要求。
-2. Android 下载改为临时文件、完整性校验和原子替换，解决失败后残缺文件与同名覆盖。
-3. Android Canvas API 实现 Link 分页、限流、可区分错误；禁止把 API 失败显示为“同步完成”。
+1. ~~Android 实现应用内 PDF/Office/图片/文本预览和音视频播放器~~ —— `v1.0.6`～`v1.0.9` 已完成。
+2. ~~Android 下载改为临时文件、完整性校验和原子替换~~ —— `v1.0.10` 已完成（`.part` + 续传 + 长度校验 + 原子改名 + 同名避让 + 重试）。
+3. ~~Android Canvas API 实现 Link 分页、限流、可区分错误~~ —— `v1.0.10` 已完成；界面在任何失败路径都不会显示「同步完成」。
+
+### P0-新：`v1.0.10` 之后仍需验证/补齐
+
+1. ~~Android 端真机/模拟器验收~~ —— `v1.0.10` 已在 API 36.1 模拟器上跑通全部 23 个插桩用例（见 17.1）。仍建议发布前在**真机**（尤其 Android 8/9 老设备与低内存设备）复跑一次 `OfficeRendererInstrumentedTest`。
+2. 桌面端 `v1.0.7` 未打包：`VERSION`/`setup.iss` 已升到 1.0.7，但未执行 PyInstaller + Inno Setup + 签名流程，未产出安装包，也未做 EXE 启动烟测。
+3. Android `WorkManager` 只有「保存了密码」时才会真正同步；未保存密码的账号仍只能靠手动同步。
 
 ### P1：高优先级可靠性
 
-- Android 抓取能力与桌面端对齐：目录、模块、页面、作业、公告、大纲和安全删除。
-- Android UI 同步与 WorkManager 增加全局互斥；失败使用 retry/failure 的正确语义。
-- Android 数据库使用非破坏性迁移；增量加入时间戳和本地存在性。
-- Android 修复文件页/学期页 `remember` 缓存导致的数据滞后。
-- Android 退出登录取消周期工作；不记住密码时清理旧密码。
-- Android 同时接受两种 Canvas 会话 Cookie；User-Agent 已在 `v1.0.5` 改为跟随构建版本。
-- 桌面统一排除扩展名规范：GUI 当前保存 `exe`，引擎比较 `.exe`。
-- 桌面 CLI `login --method cookie` 成功后持久化 auth.method。
-- 桌面认证失败信息移除 `authnEngine` HTML 片段，只输出脱敏错误上下文。
+- ~~Android 抓取能力与桌面端对齐：目录、模块、页面、作业、公告、大纲和安全删除。~~ —— `v1.0.10` 已完成（`CourseCrawler`；正文归档仍只有桌面端做）。
+- ~~Android UI 同步与 WorkManager 增加全局互斥；失败使用 retry/failure 的正确语义。~~ —— `v1.0.10` 已完成（`SyncGate` + `Result.retry/failure`）。
+- ~~Android 数据库使用非破坏性迁移；增量加入时间戳和本地存在性。~~ —— `v1.0.10` 已完成（schema v2）。
+- ~~Android 修复文件页/学期页 `remember` 缓存导致的数据滞后。~~ —— `v1.0.10` 已完成（`dataVersion` 作为缓存 key）。
+- ~~Android 退出登录取消周期工作；不记住密码时清理旧密码。~~ —— `v1.0.10` 已完成。
+- ~~Android 同时接受两种 Canvas 会话 Cookie~~ —— `v1.0.10` 已完成；User-Agent 已在 `v1.0.5` 改为跟随构建版本。
+- ~~桌面统一排除扩展名规范~~ —— `v1.0.7` 已完成（`_normalize_ext` 统一为小写 `.ext`）。
+- ~~桌面 CLI `login --method cookie` 成功后持久化 auth.method。~~ —— `v1.0.7` 已完成。
+- ~~桌面认证失败信息移除 `authnEngine` HTML 片段~~ —— `v1.0.7` 已完成（只保留 HTTP 状态与响应长度）。
 - 桌面课程本地目录定位复用同步引擎的路径清洗规则。
-- 桌面退出流程可靠等待协作停止，避免运行中的 QThread 被销毁。
-- StateStore 写事务异常时 rollback。
+- ~~桌面退出流程可靠等待协作停止，避免运行中的 QThread 被销毁。~~ —— `v1.0.7` 已完成（等待并延后退出，绝不强杀）。
+- ~~StateStore 写事务异常时 rollback。~~ —— `v1.0.7` 已完成。
+- Android 真机/模拟器插桩测试尚未在本环境跑通（见 P0-新第 1 条），发布前必须补跑。
 
 ### P2：一致性和维护性
 

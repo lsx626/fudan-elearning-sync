@@ -14,6 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -21,11 +22,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import edu.fudan.elearning.sync.R
 import edu.fudan.elearning.sync.preview.PreviewError
 import edu.fudan.elearning.sync.preview.VerticalPageList
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
 
 /**
@@ -34,21 +36,42 @@ import java.io.File
  *
  * 解析失败、空文档或不支持的格式会显示明确说明；复杂元素（图表、SmartArt、OLE
  * 嵌入等）不保证还原，在列表顶部以提示卡如实说明。
+ *
+ * [displayName] 是文件列表里显示的名字（Canvas `display_name`），顶栏与提示卡
+ * 都以它为准，避免显示磁盘上可能被百分号编码的落盘名。
  */
 @Composable
-fun OfficePreviewScreen(file: File) {
+fun OfficePreviewScreen(file: File, displayName: String = file.name) {
+    val title = remember(displayName, file.name) { displayName.ifBlank { file.name } }
     var result by remember(file.absolutePath) { mutableStateOf<OfficeParseResult?>(null) }
+    // 解析进度：(已完成, 总数)；解析器运行在 IO 线程，用 StateFlow 传递避免跨线程写状态
+    val progress = remember(file.absolutePath) { MutableStateFlow<Pair<Int, Int>?>(null) }
+    val progressState by progress.collectAsState()
     val context = LocalContext.current
 
     LaunchedEffect(file.absolutePath) {
-        withContext(Dispatchers.IO) {
-            result = OfficeExtractor.extract(context, file)
+        result = OfficeExtractor.extract(context, file) { done, total ->
+            progress.value = done to total
         }
     }
 
     when (val r = result) {
         null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator()
+                val p = progressState
+                if (p != null && p.second > 0) {
+                    Text(
+                        stringResource(R.string.parsing_progress, p.first, p.second),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
+                }
+            }
         }
         is OfficeParseResult.Success -> {
             val pages = r.pages
@@ -59,7 +82,7 @@ fun OfficePreviewScreen(file: File) {
                     if (p.heightPx > 0) p.widthPx.toFloat() / p.heightPx else 0.75f
                 },
                 renderPage = { index -> renderOfficePage(pages, index) },
-                header = { OfficeLimitationNote(file.name) }
+                header = { OfficeLimitationNote(title) }
             )
         }
         is OfficeParseResult.Empty -> PreviewError(r.reason, title = "没有可显示的内容")
@@ -90,8 +113,7 @@ private fun OfficeLimitationNote(name: String) {
                 maxLines = 1
             )
             Text(
-                "已按版式还原页面；图表、SmartArt、OLE 嵌入与动画等复杂元素可能不显示，" +
-                    "可通过右上角分享给其他工具做高保真查看。",
+                stringResource(R.string.office_limitation_note),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -100,15 +122,18 @@ private fun OfficeLimitationNote(name: String) {
 }
 
 /**
- * 渲染单页为位图；长边上限 [MAX_DIMEN]，防止位图过大。
+ * 渲染单页为位图；长边上限 [MAX_DIMEN]。
  *
- * 提取器内部已按屏幕宽度限制页宽，这里对异常文档做长边兜底，避免生成超大位图。
+ * 提取器内部已按屏幕宽度限制页宽；这里对异常文档做长边兜底：超过上限时把
+ * **页模型**等比缩小后再渲染，而不是直接放弃该页（旧实现返回 null，界面上
+ * 表现为「该页无法渲染」）。先缩模型再画，避免「先分配超大位图」的内存尖峰。
  */
 private fun renderOfficePage(pages: List<DocPage>, index: Int): Bitmap? = runCatching {
     if (index < 0 || index >= pages.size) return null
     val page = pages[index]
-    if (page.widthPx > MAX_DIMEN || page.heightPx > MAX_DIMEN) return null
-    PageRenderer.renderPage(page)
+    val longest = maxOf(page.widthPx, page.heightPx)
+    val target = if (longest > MAX_DIMEN) page.scaled(MAX_DIMEN.toFloat() / longest) else page
+    PageRenderer.renderPage(target)
 }.getOrNull()
 
 private const val MAX_DIMEN = 4096

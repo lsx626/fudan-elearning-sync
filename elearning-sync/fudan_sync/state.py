@@ -104,12 +104,18 @@ class StateStore:
                 self.store._write_lock.acquire()
                 self.cur = self.store.conn.cursor()
                 return self.cur
-            def __exit__(self, *exc):
+            def __exit__(self, exc_type, exc, tb):
                 try:
-                    self.store.conn.commit()
+                    # 异常路径必须回滚：否则多语句写入中途失败会留下半成品，
+                    # 甚至把「已写入的文件状态」提交上去。
+                    if exc_type is None:
+                        self.store.conn.commit()
+                    else:
+                        self.store.conn.rollback()
                 finally:
                     self.cur.close()
                     self.store._write_lock.release()
+                return False
         return _Ctx(self)
 
     # ------------------------------------------------------------------

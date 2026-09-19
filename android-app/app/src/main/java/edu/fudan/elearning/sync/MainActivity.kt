@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,13 +35,18 @@ class MainActivity : ComponentActivity() {
             FuXiaoXueTheme {
                 val viewModel: AppViewModel = viewModel()
                 val loginState by viewModel.loginState.collectAsState()
-                val previewFile by viewModel.previewFile.collectAsState()
+                val target by viewModel.previewTarget.collectAsState()
 
-                // 应用内预览为全屏覆盖层，独立于登录/主界面路由
-                val target = previewFile
+                // 应用内预览为全屏覆盖层，独立于登录/主界面路由。
+                // 系统返回键优先关闭预览，而不是直接退出应用。
                 if (target != null) {
+                    BackHandler { viewModel.closePreview() }
+                }
+                val preview = target
+                if (preview != null) {
                     PreviewScreen(
-                        file = target,
+                        file = preview.file,
+                        displayName = preview.title,
                         onBack = viewModel::closePreview,
                         onShare = { file ->
                             edu.fudan.elearning.sync.util.FileUtils.shareFile(

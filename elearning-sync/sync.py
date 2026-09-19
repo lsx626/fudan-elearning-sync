@@ -64,6 +64,9 @@ def cmd_login(args, cfg: AppConfig, logger) -> int:
             logger.error("Cookie 文件不存在: %s，请先使用 browser 方式登录，或手动导出 Cookie",
                          cfg.cookie_file)
             return 1
+        # 持久化认证方式：否则下次直接运行 sync/daemon 仍会按旧方式认证而失败
+        cfg.auth_method = "cookie"
+        _persist_auth_method(cfg, "cookie", logger)
         auth = CookieAuth(cfg.cookie_file)
     elif method == "password":
         username = args.username or cfg.uis_username

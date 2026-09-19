@@ -4,7 +4,9 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.Layout
@@ -15,6 +17,7 @@ import android.text.style.AbsoluteSizeSpan
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.text.style.UnderlineSpan
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /**
@@ -32,6 +35,11 @@ object PageRenderer {
     private const val CELL_PADDING = 6f
     private const val CELL_EXTRA_H = 8f
     private const val MIN_ROW_H = 18f
+
+    /** 占位卡配色（浅灰底 + 虚线框 + 中灰文字，明暗主题下都清晰可读）。 */
+    private const val PLACEHOLDER_FILL = 0xFFF1F2F6
+    private const val PLACEHOLDER_STROKE = 0xFFC9CDD6
+    private const val PLACEHOLDER_TEXT = 0xFF5A6070
 
     /** ARGB Long -> Int 颜色。 */
     private fun Long.toIntColor(): Int = this.toInt()
@@ -248,17 +256,259 @@ object PageRenderer {
                 is PageItem.Image -> drawImage(canvas, item)
                 is PageItem.TextBlock -> drawText(canvas, item)
                 is PageItem.Table -> drawTable(canvas, item)
-                is PageItem.Line -> {
-                    val p = Paint().apply {
-                        color = item.argb.toIntColor()
-                        strokeWidth = item.widthPx
-                        isAntiAlias = true
-                    }
-                    canvas.drawLine(item.x1, item.y1, item.x2, item.y2, p)
-                }
+                is PageItem.Line -> drawLine(canvas, item)
+                is PageItem.Shape -> drawShape(canvas, item)
+                is PageItem.Placeholder -> drawPlaceholder(canvas, item)
             }
         }
         return bmp
+    }
+
+    /** 直线 + 两端箭头（连接线、装饰箭头等）。 */
+    private fun drawLine(canvas: Canvas, item: PageItem.Line) {
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = item.argb.toIntColor()
+            strokeWidth = item.widthPx
+            strokeCap = Paint.Cap.ROUND
+        }
+        canvas.drawLine(item.x1, item.y1, item.x2, item.y2, paint)
+        val dx = item.x2 - item.x1
+        val dy = item.y2 - item.y1
+        val length = hypot(dx, dy)
+        if (length < 0.5f) return
+        val ux = dx / length
+        val uy = dy / length
+        val size = (item.widthPx * 4f).coerceIn(8f, 40f)
+        if (item.endArrow == ArrowEnd.ARROW) {
+            drawArrowHead(canvas, item.x2, item.y2, ux, uy, size, paint)
+        }
+        if (item.startArrow == ArrowEnd.ARROW) {
+            drawArrowHead(canvas, item.x1, item.y1, -ux, -uy, size, paint)
+        }
+    }
+
+    /** 在 (x, y) 处画一个指向 (ux, uy) 方向的实心箭头。 */
+    private fun drawArrowHead(canvas: Canvas, x: Float, y: Float,
+                              ux: Float, uy: Float, size: Float, paint: Paint) {
+        val px = -uy
+        val py = ux
+        val half = size * 0.5f
+        val path = Path().apply {
+            moveTo(x, y)
+            lineTo(x - ux * size + px * half, y - uy * size + py * half)
+            lineTo(x - ux * size - px * half, y - uy * size - py * half)
+            close()
+        }
+        canvas.drawPath(path, Paint(paint).apply { style = Paint.Style.FILL })
+    }
+
+    /**
+     * 自选形状：按几何生成 Path，先填充后描边，整体围绕形状中心旋转。
+     *
+     * 未在 [ShapeGeometry] 中建模的形状退化为矩形（[ShapeGeometry.OTHER]），
+     * 保持「位置与配色正确、细节不保证」的诚实降级。
+     */
+    private fun drawShape(canvas: Canvas, item: PageItem.Shape) {
+        if (item.fill == null && item.stroke == null) return
+        val rect = item.rect.toRectF()
+        if (rect.width() <= 0f || rect.height() <= 0f) return
+        canvas.save()
+        if (item.rotationDeg != 0f) {
+            canvas.rotate(item.rotationDeg, rect.centerX(), rect.centerY())
+        }
+        val path = pathFor(item.geometry, rect)
+        item.fill?.let { argb ->
+            canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = argb.toIntColor()
+                style = Paint.Style.FILL
+            })
+        }
+        item.stroke?.let { argb ->
+            canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = argb.toIntColor()
+                style = Paint.Style.STROKE
+                strokeWidth = item.strokeWidthPx
+                strokeJoin = Paint.Join.ROUND
+                strokeCap = Paint.Cap.ROUND
+            })
+        }
+        canvas.restore()
+    }
+
+    /**
+     * 占位卡：图表 / SmartArt / OLE 嵌入 / 视频等无法高保真还原的元素。
+     * 浅灰圆角 + 虚线边框 + 说明文字，明确告知限制，不假装成功。
+     */
+    private fun drawPlaceholder(canvas: Canvas, item: PageItem.Placeholder) {
+        val rect = item.rect.toRectF()
+        if (rect.width() <= 1f || rect.height() <= 1f) return
+        val radius = 12f
+        canvas.drawRoundRect(rect, radius, radius, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = PLACEHOLDER_FILL.toIntColor()
+        })
+        canvas.drawRoundRect(rect, radius, radius, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = PLACEHOLDER_STROKE.toIntColor()
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
+        })
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = (rect.height() * 0.16f).coerceIn(12f, 26f)
+            color = PLACEHOLDER_TEXT.toIntColor()
+        }
+        val textWidth = (rect.width() - 24f).roundToInt().coerceAtLeast(1)
+        val layout = StaticLayout.Builder.obtain(
+            SpannableStringBuilder(item.label), 0, item.label.length, paint, textWidth
+        ).setAlignment(Layout.Alignment.ALIGN_CENTER)
+            .setLineSpacing(0f, 1.15f)
+            .build()
+        canvas.save()
+        canvas.translate(rect.left + 12f, rect.centerY() - layout.height / 2f)
+        layout.draw(canvas)
+        canvas.restore()
+    }
+
+    /** 几何 -> Path。所有坐标都基于传入的矩形，便于统一旋转与缩放。 */
+    private fun pathFor(geometry: ShapeGeometry, rect: RectF): Path {
+        val path = Path()
+        val l = rect.left
+        val t = rect.top
+        val r = rect.right
+        val b = rect.bottom
+        val w = rect.width()
+        val h = rect.height()
+        when (geometry) {
+            ShapeGeometry.RECT, ShapeGeometry.OTHER, ShapeGeometry.CALLOUT ->
+                path.addRect(rect, Path.Direction.CW)
+            ShapeGeometry.ROUND_RECT, ShapeGeometry.FLOWCHART_PROCESS -> {
+                val radius = minOf(w, h) * 0.18f
+                path.addRoundRect(rect, radius, radius, Path.Direction.CW)
+            }
+            ShapeGeometry.ELLIPSE -> path.addOval(rect, Path.Direction.CW)
+            ShapeGeometry.TRIANGLE -> {
+                path.moveTo(rect.centerX(), t); path.lineTo(r, b); path.lineTo(l, b); path.close()
+            }
+            ShapeGeometry.RT_TRIANGLE -> {
+                path.moveTo(l, t); path.lineTo(l, b); path.lineTo(r, b); path.close()
+            }
+            ShapeGeometry.DIAMOND, ShapeGeometry.FLOWCHART_DECISION -> {
+                path.moveTo(rect.centerX(), t); path.lineTo(r, rect.centerY())
+                path.lineTo(rect.centerX(), b); path.lineTo(l, rect.centerY()); path.close()
+            }
+            ShapeGeometry.PENTAGON -> {
+                path.moveTo(rect.centerX(), t)
+                path.lineTo(r, t + h * 0.38f)
+                path.lineTo(r - w * 0.18f, b)
+                path.lineTo(l + w * 0.18f, b)
+                path.lineTo(l, t + h * 0.38f)
+                path.close()
+            }
+            ShapeGeometry.CHEVRON -> {
+                val notch = w * 0.25f
+                path.moveTo(l, t)
+                path.lineTo(r - notch, t)
+                path.lineTo(r, rect.centerY())
+                path.lineTo(r - notch, b)
+                path.lineTo(l, b)
+                path.lineTo(l + notch, rect.centerY())
+                path.close()
+            }
+            ShapeGeometry.RIGHT_ARROW, ShapeGeometry.LEFT_ARROW -> {
+                val right = geometry == ShapeGeometry.RIGHT_ARROW
+                val shaft = h * 0.5f
+                val head = w * 0.45f
+                if (right) {
+                    path.moveTo(l, rect.centerY() - shaft / 2)
+                    path.lineTo(r - head, rect.centerY() - shaft / 2)
+                    path.lineTo(r - head, t)
+                    path.lineTo(r, rect.centerY())
+                    path.lineTo(r - head, b)
+                    path.lineTo(r - head, rect.centerY() + shaft / 2)
+                    path.lineTo(l, rect.centerY() + shaft / 2)
+                } else {
+                    path.moveTo(r, rect.centerY() - shaft / 2)
+                    path.lineTo(l + head, rect.centerY() - shaft / 2)
+                    path.lineTo(l + head, t)
+                    path.lineTo(l, rect.centerY())
+                    path.lineTo(l + head, b)
+                    path.lineTo(l + head, rect.centerY() + shaft / 2)
+                    path.lineTo(r, rect.centerY() + shaft / 2)
+                }
+                path.close()
+            }
+            ShapeGeometry.UP_ARROW, ShapeGeometry.DOWN_ARROW -> {
+                val up = geometry == ShapeGeometry.UP_ARROW
+                val shaft = w * 0.5f
+                val head = h * 0.45f
+                if (up) {
+                    path.moveTo(rect.centerX() - shaft / 2, b)
+                    path.lineTo(rect.centerX() - shaft / 2, t + head)
+                    path.lineTo(l, t + head)
+                    path.lineTo(rect.centerX(), t)
+                    path.lineTo(r, t + head)
+                    path.lineTo(rect.centerX() + shaft / 2, t + head)
+                    path.lineTo(rect.centerX() + shaft / 2, b)
+                } else {
+                    path.moveTo(rect.centerX() - shaft / 2, t)
+                    path.lineTo(rect.centerX() - shaft / 2, b - head)
+                    path.lineTo(l, b - head)
+                    path.lineTo(rect.centerX(), b)
+                    path.lineTo(r, b - head)
+                    path.lineTo(rect.centerX() + shaft / 2, b - head)
+                    path.lineTo(rect.centerX() + shaft / 2, t)
+                }
+                path.close()
+            }
+            ShapeGeometry.STAR_4 -> addStar(path, rect, 4, 0.38f)
+            ShapeGeometry.STAR_5 -> addStar(path, rect, 5, 0.4f)
+            ShapeGeometry.PLUS -> {
+                val armX = w * 0.28f
+                val armY = h * 0.28f
+                path.moveTo(rect.centerX() - armX, t)
+                path.lineTo(rect.centerX() + armX, t)
+                path.lineTo(rect.centerX() + armX, rect.centerY() - armY)
+                path.lineTo(r, rect.centerY() - armY)
+                path.lineTo(r, rect.centerY() + armY)
+                path.lineTo(rect.centerX() + armX, rect.centerY() + armY)
+                path.lineTo(rect.centerX() + armX, b)
+                path.lineTo(rect.centerX() - armX, b)
+                path.lineTo(rect.centerX() - armX, rect.centerY() + armY)
+                path.lineTo(l, rect.centerY() + armY)
+                path.lineTo(l, rect.centerY() - armY)
+                path.lineTo(rect.centerX() - armX, rect.centerY() - armY)
+                path.close()
+            }
+            ShapeGeometry.LEFT_BRACE, ShapeGeometry.RIGHT_BRACE -> {
+                // 花括号只画折线轮廓，不填充（近似还原，细节不保证）
+                val left = geometry == ShapeGeometry.LEFT_BRACE
+                val outerX = if (left) r else l
+                val innerX = if (left) l else r
+                path.moveTo(outerX, t)
+                path.lineTo(rect.centerX(), t + h * 0.2f)
+                path.lineTo(innerX, rect.centerY())
+                path.lineTo(rect.centerX(), b - h * 0.2f)
+                path.lineTo(outerX, b)
+            }
+        }
+        return path
+    }
+
+    /** 星形路径：外顶点 [points] 个，内顶点按 [innerRatio] 收缩。 */
+    private fun addStar(path: Path, rect: RectF, points: Int, innerRatio: Float) {
+        val cx = rect.centerX()
+        val cy = rect.centerY()
+        val rx = rect.width() / 2f
+        val ry = rect.height() / 2f
+        val step = Math.PI / points
+        var angle = -Math.PI / 2
+        for (i in 0 until points * 2) {
+            val ratio = if (i % 2 == 0) 1f else innerRatio
+            val x = cx + (rx * ratio * Math.cos(angle)).toFloat()
+            val y = cy + (ry * ratio * Math.sin(angle)).toFloat()
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            angle += step
+        }
+        path.close()
     }
 
     private fun drawImage(canvas: Canvas, item: PageItem.Image) {
@@ -288,10 +538,14 @@ object PageRenderer {
     }
 
     private fun drawText(canvas: Canvas, item: PageItem.TextBlock) {
-        var y = item.rect.top
+        val rect = item.rect.toRectF()
+        if (rect.width() <= 1f || rect.height() <= 1f) return
+        val layouts = mutableListOf<Pair<StaticLayout?, Float>>()
+        var totalH = 0f
         for (para in item.paragraphs) {
             if (para.runs.isEmpty()) {
-                y += para.spaceAfterPx
+                layouts.add(null to para.spaceAfterPx)
+                totalH += para.spaceAfterPx
                 continue
             }
             val paint = TextPaint(Paint.ANTI_ALIAS_FLAG)
@@ -299,17 +553,37 @@ object PageRenderer {
             paint.textSize = first.sizePx
             paint.color = (first.argb ?: 0xFF1A1A1A).toIntColor()
             val sb = buildSpannable(para)
-            val w = (item.rect.width).roundToInt().coerceAtLeast(1)
+            val w = rect.width().roundToInt().coerceAtLeast(1)
             val layout = StaticLayout.Builder.obtain(sb, 0, sb.length, paint, w)
                 .setAlignment(alignOf(para.align))
                 .build()
-            canvas.save()
-            canvas.translate(item.rect.left, y)
-            layout.draw(canvas)
-            canvas.restore()
-            y += layout.height + para.spaceAfterPx
-            if (y > item.rect.bottom) break
+            layouts.add(layout to para.spaceAfterPx)
+            totalH += layout.height + para.spaceAfterPx
         }
+        if (layouts.isEmpty()) return
+        // 垂直对齐：文本框的 TOP / MIDDLE / BOTTOM
+        var y = when (item.valign) {
+            VerticalAlign.MIDDLE -> rect.top + (rect.height() - totalH) / 2f
+            VerticalAlign.BOTTOM -> rect.bottom - totalH
+            VerticalAlign.TOP -> rect.top
+        }.coerceAtLeast(rect.top)
+        canvas.save()
+        if (item.rotationDeg != 0f) {
+            canvas.rotate(item.rotationDeg, rect.centerX(), rect.centerY())
+        }
+        for ((layout, spaceAfter) in layouts) {
+            if (layout != null) {
+                canvas.save()
+                canvas.translate(rect.left, y)
+                layout.draw(canvas)
+                canvas.restore()
+                y += layout.height + spaceAfter
+            } else {
+                y += spaceAfter
+            }
+            if (y > rect.bottom) break
+        }
+        canvas.restore()
     }
 
     private fun drawTable(canvas: Canvas, table: PageItem.Table) {

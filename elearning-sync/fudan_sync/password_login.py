@@ -223,10 +223,7 @@ def password_login(base_url: str, username: str, password: str,
         ticket_candidates.append(redirect)
 
     if not ticket_candidates:
-        snippet = re.sub(r"\s+", " ", body[:200])
-        raise PasswordLoginError(
-            "登录跳转异常：服务器应答中没有 CAS 回调地址。"
-            f"（HTTP {resp.status_code}；可稍后重试，或检查网络代理设置）{snippet}")
+        raise PasswordLoginError(_missing_ticket_message(resp.status_code, body))
 
     cas_ok = False
     for ticket_url in ticket_candidates:
@@ -257,6 +254,18 @@ def password_login(base_url: str, username: str, password: str,
     csrf_token = csrf_match.group(1) if csrf_match else None
 
     return session, csrf_token
+
+
+def _missing_ticket_message(status_code: int, body: str) -> str:
+    """
+    认证中间页缺少 CAS 回调地址时的错误文案。
+
+    安全硬性要求：认证中间页可能含跳转地址与认证上下文，异常文案里**绝不能**
+    带上响应正文片段；这里只保留 HTTP 状态与响应长度，既能排障又不泄露内容。
+    """
+    return ("登录跳转异常：服务器应答中没有 CAS 回调地址。"
+            f"（HTTP {status_code}，响应长度 {len(body)} 字节；"
+            "可稍后重试，或检查网络代理设置）")
 
 
 def session_cookies(session: requests.Session) -> List[Dict[str, Any]]:

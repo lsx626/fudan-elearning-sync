@@ -14,6 +14,7 @@ import edu.fudan.elearning.sync.data.Repo
 import edu.fudan.elearning.sync.network.ApiClient
 import edu.fudan.elearning.sync.network.CanvasApi
 import edu.fudan.elearning.sync.sync.SyncEngine
+import edu.fudan.elearning.sync.sync.SyncGate
 import edu.fudan.elearning.sync.util.Prefs
 import edu.fudan.elearning.sync.util.SecurePrefs
 import java.util.concurrent.TimeUnit
@@ -34,27 +35,55 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         // 静默登录
         val authResult = UisAuthenticator().login(username, password)
         if (authResult !is LoginResult.Success) {
-            return Result.success()
+            // 密码可能已失效：提示用户重新登录，而不是静默当作成功
+            Notifier.notifySyncError(applicationContext, "自动登录失败，请打开应用重新登录")
+            return Result.failure()
         }
-        ApiClient.setSession(authResult.session.canvasSessionCookie, authResult.session.csrfToken)
+        ApiClient.setSession(
+            authResult.session.canvasSessionCookie,
+            authResult.session.csrfToken,
+            authResult.session.cookieName
+        )
 
-        // 同步
-        val repo = Repo(applicationContext)
-        val api = CanvasApi()
-        val engine = SyncEngine(applicationContext, api, repo)
-        val result = engine.sync(full = false)
+        // 同步：与手动同步互斥；已有同步在跑时直接跳过本次后台任务
+        val result = SyncGate.runOrSkip {
+            val repo = Repo(applicationContext)
+            val api = CanvasApi()
+            val engine = SyncEngine(applicationContext, api, repo)
+            engine.sync(full = false)
+        } ?: return Result.success()
 
         // 下载新文件后发通知
         if (result.filesDownloaded > 0) {
             Notifier.notifySyncComplete(applicationContext, result.filesDownloaded, result.bytesDownloaded)
         }
+        if (result.filesFailed > 0 && result.ok) {
+            Notifier.notifySyncError(
+                applicationContext,
+                "有 ${result.filesFailed} 个文件未下载成功，下次同步会自动重试"
+            )
+        }
         prefs.lastSyncAt = System.currentTimeMillis()
 
-        return Result.success()
+        return when {
+            result.needsReauth -> {
+                Notifier.notifySyncError(applicationContext, "登录状态已失效，请打开应用重新登录")
+                Result.failure()
+            }
+            !result.ok -> {
+                if (result.retryable) Result.retry()
+                else {
+                    Notifier.notifySyncError(applicationContext, result.error ?: "同步失败")
+                    Result.failure()
+                }
+            }
+            else -> Result.success()
+        }
     }
 
     companion object {
         private const val UNIQUE_WORK = "fudan_sync_periodic_work"
+        private const val TAG = "fudan_sync"
 
         /** 按用户配置的间隔安排定期同步。 */
         fun schedule(context: Context, intervalMinutes: Int) {
@@ -65,6 +94,7 @@ class SyncWorker(context: Context, params: WorkerParameters) :
                         .setRequiredNetworkType(NetworkType.CONNECTED)
                         .build()
                 )
+                .addTag(TAG)
                 .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 UNIQUE_WORK,
@@ -81,8 +111,20 @@ class SyncWorker(context: Context, params: WorkerParameters) :
                         .setRequiredNetworkType(NetworkType.CONNECTED)
                         .build()
                 )
+                .addTag(TAG)
                 .build()
             WorkManager.getInstance(context).enqueue(request)
+        }
+
+        /**
+         * 取消全部同步任务（退出登录/关闭后台同步时调用）。
+         *
+         * 退出登录后继续跑周期任务只会在后台反复失败并弹「重新登录」通知，
+         * 因此必须显式取消，而不是留给系统。
+         */
+        fun cancel(context: Context) {
+            WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_WORK)
+            WorkManager.getInstance(context).cancelAllWorkByTag(TAG)
         }
     }
 }

@@ -33,7 +33,7 @@ import java.util.zip.ZipInputStream
  * 3. 旧二进制 .doc/.xls/.ppt 无法解析，直接说明不支持，不假装成功。
  */
 @Composable
-fun OfficeFallbackScreen(file: File) {
+fun OfficeFallbackScreen(file: File, displayName: String = file.name) {
     val ext = FileTypes.extOf(file.name)
     var extracted by remember { mutableStateOf<String?>(null) }
     var note by remember { mutableStateOf("") }
@@ -59,7 +59,7 @@ fun OfficeFallbackScreen(file: File) {
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text(
-            file.name,
+            displayName.ifBlank { file.name },
             style = MaterialTheme.typography.titleMedium,
             maxLines = 2
         )
