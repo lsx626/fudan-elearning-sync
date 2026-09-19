@@ -58,3 +58,6 @@ release/
 
 # Android UI 测试截图
 android-app/screenshots/
+
+# GitHub Release 令牌（本地敏感，绝不提交）
+.gh-token
