@@ -18,6 +18,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import edu.fudan.elearning.sync.office.TextSanitizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -49,7 +50,7 @@ fun TextPreviewScreen(file: File) {
                 val start = if (raw.size >= 3 &&
                     raw[0] == 0xEF.toByte() && raw[1] == 0xBB.toByte() && raw[2] == 0xBF.toByte()
                 ) 3 else 0
-                content = String(raw, start, raw.size - start, Charsets.UTF_8)
+                content = decodeText(raw, start)
                 truncated = fileSize > MAX_BYTES
             } catch (e: Exception) {
                 error = "无法读取文件：${e.message ?: "未知错误"}"
@@ -85,6 +86,21 @@ fun TextPreviewScreen(file: File) {
             }
         }
     }
+}
+
+/**
+ * 文本解码：先按 UTF-8 解；出现替换字符（典型 GBK 文件）时改用 GB18030。
+ *
+ * 校园资料里 GBK/GB18030 编码的 CSV、TXT 很常见，只按 UTF-8 解会整篇花屏。
+ */
+private fun decodeText(raw: ByteArray, start: Int): String {
+    val utf8 = String(raw, start, raw.size - start, Charsets.UTF_8)
+    val utf8Bad = utf8.count { it == '\uFFFD' }
+    if (utf8Bad == 0) return TextSanitizer.clean(utf8)
+    val gbk = runCatching {
+        String(raw, start, raw.size - start, charset("GB18030"))
+    }.getOrNull() ?: return TextSanitizer.clean(utf8)
+    return TextSanitizer.clean(if (gbk.count { it == '\uFFFD' } < utf8Bad) gbk else utf8)
 }
 
 private fun formatBytes(bytes: Long): String {

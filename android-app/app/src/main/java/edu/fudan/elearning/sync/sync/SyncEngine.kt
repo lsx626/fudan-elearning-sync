@@ -8,10 +8,18 @@ import edu.fudan.elearning.sync.data.SyncRun
 import edu.fudan.elearning.sync.network.ApiException
 import edu.fudan.elearning.sync.network.CanvasApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/** 文件内容下载的并发上限（元数据请求仍然严格串行）。 */
+private const val DOWNLOAD_CONCURRENCY = 3
 
 /**
  * 同步结果。
@@ -52,6 +60,38 @@ class SyncEngine(
     private val repo: Repo
 ) {
     private val downloader = DownloadManager(context)
+    private val prefs = edu.fudan.elearning.sync.util.Prefs(context)
+
+    /** 一个待下载任务（先算好路径，再并发下载）。 */
+    private data class DownloadTask(
+        val ref: RemoteFileRef,
+        val dest: File,
+        val filename: String,
+        val relativeDir: String,
+        val displayName: String,
+        val previousDownloadedAt: String?
+    )
+
+    /**
+     * 下载单个文件；若因 **签名 URL 过期** 返回 404/403，则重新拉一次文件元数据
+     * 换取新的签名 URL 再试一次。
+     *
+     * Canvas 的 `url` 字段带 verifier 且会过期；大课程同步到后半程时，
+     * 最早抓到的 URL 已经失效——这正是「部分课程同步出现 404」的根因。
+     */
+    private suspend fun downloadWithFreshUrlIfNeeded(
+        courseId: Long,
+        task: DownloadTask
+    ): DownloadOutcome {
+        val first = downloader.download(task.ref.url, task.dest, task.ref.size)
+        if (first !is DownloadOutcome.Failed) return first
+        val urlExpired = first.reason.contains("404") || first.reason.contains("403")
+        if (!urlExpired) return first
+        val freshUrl = runCatching { api.getFile(courseId, task.ref.fileId)?.url }
+            .getOrNull()?.takeIf { it.isNotEmpty() && it != task.ref.url }
+            ?: return first
+        return downloader.download(freshUrl, task.dest, task.ref.size)
+    }
 
     /** 执行一次同步。返回结果统计；失败语义见 [SyncResult]。 */
     suspend fun sync(
@@ -90,9 +130,15 @@ class SyncEngine(
 
             // 抓取：文件主列表 + 目录树 + 模块 + 页面 + 作业 + 公告 + 大纲
             val outcome = try {
-                CourseCrawler(api) { warning ->
-                    onProgress("course", index + 1, validCourses.size, warning)
-                }.crawl(canvasCourse.id)
+                CourseCrawler(
+                    api = api,
+                    onWarning = { warning ->
+                        onProgress("course", index + 1, validCourses.size, warning)
+                    },
+                    // 已确认未启用的来源不再重复请求（404 既慢又会刷错误提示）
+                    skipSources = prefs.disabledSources(canvasCourse.id),
+                    onSourceUnavailable = { source -> prefs.markSourceDisabled(canvasCourse.id, source) }
+                ).crawl(canvasCourse.id)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: ApiException) {
@@ -134,6 +180,7 @@ class SyncEngine(
                 takenByDir.getOrPut(dirKey) { mutableSetOf() }.add(local.name)
             }
 
+            val tasks = mutableListOf<DownloadTask>()
             for (ref in files) {
                 if (SyncPolicy.shouldSkip(remoteName(ref))) continue
 
@@ -167,50 +214,76 @@ class SyncEngine(
                     continue
                 }
 
-                val displayName = ref.displayName.ifEmpty { filename }
-                when (val download = downloader.download(ref.url, dest, ref.size)) {
-                    is DownloadOutcome.Success -> {
-                        filesDownloaded += 1
-                        bytesDownloaded += download.bytes
-                        repo.upsertFile(
-                            FileItem(
-                                fileId = ref.fileId,
-                                courseId = canvasCourse.id,
-                                name = displayName,
-                                filename = filename,
-                                folderPath = relativeDir,
-                                localPath = download.path.absolutePath,
-                                size = download.bytes,
-                                status = SyncPolicy.STATUS_DOWNLOADED,
-                                downloadedAt = now(),
-                                url = ref.url,
-                                updatedAt = ref.updatedAt
+                tasks += DownloadTask(
+                    ref = ref,
+                    dest = dest,
+                    filename = filename,
+                    relativeDir = relativeDir,
+                    displayName = ref.displayName.ifEmpty { filename },
+                    previousDownloadedAt = existing?.downloadedAt
+                )
+            }
+
+            // 并发下载（含失败后刷新签名 URL 重试），DB 写入仍串行，避免多线程写 SQLite
+            if (tasks.isNotEmpty()) {
+                val gate = Semaphore(DOWNLOAD_CONCURRENCY)
+                val outcomes = coroutineScope {
+                    tasks.map { task ->
+                        async {
+                            gate.withPermit {
+                                task to downloadWithFreshUrlIfNeeded(canvasCourse.id, task)
+                            }
+                        }
+                    }.awaitAll()
+                }
+                for ((task, download) in outcomes) {
+                    if (fatal != null) break
+                    when (download) {
+                        is DownloadOutcome.Success -> {
+                            filesDownloaded += 1
+                            bytesDownloaded += download.bytes
+                            repo.upsertFile(
+                                FileItem(
+                                    fileId = task.ref.fileId,
+                                    courseId = canvasCourse.id,
+                                    name = task.displayName,
+                                    filename = task.filename,
+                                    folderPath = task.relativeDir,
+                                    localPath = download.path.absolutePath,
+                                    size = download.bytes,
+                                    status = SyncPolicy.STATUS_DOWNLOADED,
+                                    downloadedAt = now(),
+                                    url = task.ref.url,
+                                    updatedAt = task.ref.updatedAt
+                                )
                             )
-                        )
-                        onProgress("file", filesDownloaded, 0, "下载：$displayName")
-                    }
-                    is DownloadOutcome.Failed -> {
-                        filesFailed += 1
-                        // 记录失败行，让列表能显示、下次同步能重试
-                        repo.upsertFile(
-                            FileItem(
-                                fileId = ref.fileId,
-                                courseId = canvasCourse.id,
-                                name = displayName,
-                                filename = filename,
-                                folderPath = relativeDir,
-                                localPath = dest.absolutePath,
-                                size = ref.size,
-                                status = SyncPolicy.STATUS_FAILED,
-                                downloadedAt = existing?.downloadedAt,
-                                url = ref.url,
-                                updatedAt = ref.updatedAt
+                            onProgress("file", filesDownloaded, 0, "下载：${task.displayName}")
+                        }
+                        is DownloadOutcome.Failed -> {
+                            filesFailed += 1
+                            // 记录失败行，让列表能显示、下次同步能重试
+                            repo.upsertFile(
+                                FileItem(
+                                    fileId = task.ref.fileId,
+                                    courseId = canvasCourse.id,
+                                    name = task.displayName,
+                                    filename = task.filename,
+                                    folderPath = task.relativeDir,
+                                    localPath = task.dest.absolutePath,
+                                    size = task.ref.size,
+                                    status = SyncPolicy.STATUS_FAILED,
+                                    downloadedAt = task.previousDownloadedAt,
+                                    url = task.ref.url,
+                                    updatedAt = task.ref.updatedAt
+                                )
                             )
-                        )
-                        onProgress("file", filesDownloaded, 0, "失败：$displayName（${download.reason}）")
-                        if (!download.retryable && download.reason.contains("登录")) {
-                            fatal = ApiException.Auth()
-                            break
+                            onProgress(
+                                "file", filesDownloaded, 0,
+                                "失败：${task.displayName}（${download.reason}）"
+                            )
+                            if (!download.retryable && download.reason.contains("登录")) {
+                                fatal = ApiException.Auth()
+                            }
                         }
                     }
                 }

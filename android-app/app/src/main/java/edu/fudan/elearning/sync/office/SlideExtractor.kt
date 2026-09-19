@@ -4,6 +4,7 @@ import org.apache.poi.hslf.usermodel.HSLFPictureShape
 import org.apache.poi.hslf.usermodel.HSLFSlideShow
 import org.apache.poi.hslf.usermodel.HSLFTable
 import org.apache.poi.hslf.usermodel.HSLFTextShape
+import org.apache.poi.sl.draw.DrawPaint
 import org.apache.poi.sl.usermodel.ColorStyle
 import org.apache.poi.sl.usermodel.ConnectorShape
 import org.apache.poi.sl.usermodel.GroupShape
@@ -111,6 +112,10 @@ object SlideExtractor {
                 Rect4(0f, 0f, targetWidthPx.toFloat(), pageHPx.toFloat()),
                 bg ?: 0xFFFFFFFF
             ))
+            // 母版/版式上的装饰图形（校徽、色带、装饰线等）画在幻灯片内容之前
+            for (shape in backgroundShapes(slide)) {
+                runCatching { appendShape(shape, items, scale, 0.0, 0.0, downscaleImage) }
+            }
             for (shape in slide.shapes) {
                 runCatching { appendShape(shape, items, scale, 0.0, 0.0, downscaleImage) }
             }
@@ -119,6 +124,30 @@ object SlideExtractor {
         }
         return pages
     }
+
+    /**
+     * 母版与版式上的**非占位**形状。
+     *
+     * 幻灯片通常只放内容，背景装饰（校徽、色带、装饰线、页脚图形）都在版式/母版里；
+     * 不渲染它们页面就会「缺组件」。占位符必须跳过：版式占位符里是提示文字，
+     * 真正内容在幻灯片上，重复绘制会出现重影。
+     */
+    private fun backgroundShapes(slide: Slide<*, *>): List<Any> = runCatching {
+        val xslf = slide as? org.apache.poi.xslf.usermodel.XSLFSlide
+            ?: return emptyList<Any>()
+        val out = mutableListOf<Any>()
+        runCatching {
+            xslf.masterSheet?.shapes?.forEach { shape ->
+                if ((shape as? SimpleShape<*, *>)?.placeholder == null) out += shape
+            }
+        }
+        runCatching {
+            xslf.slideLayout?.shapes?.forEach { shape ->
+                if ((shape as? SimpleShape<*, *>)?.placeholder == null) out += shape
+            }
+        }
+        out
+    }.getOrDefault(emptyList())
 
     /**
      * 分发单个形状。[dx]/[dy] 为组合形状内子坐标的平移量（磅），由 [appendGroup] 传入。
@@ -208,7 +237,10 @@ object SlideExtractor {
                                items: MutableList<PageItem>,
                                scale: Double) {
         val simple = shape as? SimpleShape<*, *> ?: return
+        // 填充优先级：实色 → 渐变（取加权平均色兜底，避免整块形状消失）
         val fill = runCatching { colorArgb(simple.fillColor) }.getOrNull()
+            ?: runCatching { paintArgb(simple.fillStyle?.paint) }.getOrNull()
+            ?: runCatching { gradientArgb(simple.fillStyle?.paint) }.getOrNull()
         val stroke = runCatching { paintArgb(simple.strokeStyle?.paint) }.getOrNull()
         if (fill == null && stroke == null) return
         val widthPt = runCatching { simple.strokeStyle?.lineWidth }.getOrNull() ?: 1.0
@@ -342,7 +374,7 @@ object SlideExtractor {
             runCatching {
                 val sizePt = run.fontSize ?: DEFAULT_FONT_PT
                 DocRun(
-                    text = run.rawText ?: "",
+                    text = TextSanitizer.clean(run.rawText),
                     sizePx = (sizePt * scale).toFloat(),
                     argb = paintArgb(run.fontColor),
                     bold = run.isBold,
@@ -469,11 +501,53 @@ object SlideExtractor {
      */
     private fun paintArgb(paint: PaintStyle?): Long? = when (paint) {
         null -> null
-        is ColorStyle -> runCatching { colorArgb(paint.color) }.getOrNull()
-        is PaintStyle.SolidPaint -> runCatching {
-            colorArgb(paint.solidColor?.color)
-        }.getOrNull()
+        is ColorStyle -> themeArgb(paint)
+        is PaintStyle.SolidPaint -> paint.solidColor?.let { themeArgb(it) }
         else -> null
+    }
+
+    /**
+     * 主题色 → 最终 ARGB。
+     *
+     * `ColorStyle.getColor()` 只给出**原始**颜色，主题里的 tint/shade/lumMod/lumOff
+     * 都要靠 `DrawPaint.applyColorTransform` 应用；不做这一步，深色主题的配色会明显偏。
+     */
+    private fun themeArgb(style: ColorStyle): Long? =
+        runCatching { colorArgb(DrawPaint.applyColorTransform(style)) }.getOrNull()
+            ?: runCatching { colorArgb(style.color) }.getOrNull()
+
+    /**
+     * 渐变填充 → 加权平均色。
+     *
+     * 应用内不做真正的渐变渲染（成本高、收益低），但**绝不能让形状消失**：
+     * 取各色标的平均色作为纯色兜底，视觉上接近原设计，也比空白好得多。
+     */
+    private fun gradientArgb(paint: PaintStyle?): Long? {
+        val gradient = paint as? PaintStyle.GradientPaint ?: return null
+        val colors = runCatching { gradient.gradientColors }.getOrNull() ?: return null
+        if (colors.isEmpty()) return null
+        val fractions = runCatching { gradient.gradientFractions }.getOrNull()
+        var sumR = 0.0
+        var sumG = 0.0
+        var sumB = 0.0
+        var weight = 0.0
+        colors.forEachIndexed { index, style ->
+            val argb = themeArgb(style) ?: return@forEachIndexed
+            val w = if (fractions != null && index < fractions.size) {
+                fractions[index].toDouble().coerceAtLeast(0.05)
+            } else {
+                1.0
+            }
+            sumR += ((argb shr 16) and 0xFF) * w
+            sumG += ((argb shr 8) and 0xFF) * w
+            sumB += (argb and 0xFF) * w
+            weight += w
+        }
+        if (weight <= 0.0) return null
+        val r = (sumR / weight).toLong().coerceIn(0, 255)
+        val g = (sumG / weight).toLong().coerceIn(0, 255)
+        val b = (sumB / weight).toLong().coerceIn(0, 255)
+        return (0xFFL shl 24) or (r shl 16) or (g shl 8) or b
     }
 
     /** java.awt.Color → ARGB Long。 */

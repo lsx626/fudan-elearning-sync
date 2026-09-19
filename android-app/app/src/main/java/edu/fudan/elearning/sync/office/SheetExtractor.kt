@@ -181,7 +181,7 @@ object SheetExtractor {
         colStartX(colWidths, (col + 1).coerceAtMost(colWidths.size))
 
     private fun cellText(cell: Cell): String {
-        return runCatching {
+        val raw = runCatching {
             when (cell.cellType) {
                 CellType.NUMERIC -> {
                     val v = cell.numericCellValue
@@ -197,6 +197,8 @@ object SheetExtractor {
                 else -> ""
             }
         }.getOrDefault("")
+        // 单元格里同样可能有控制字符（换行/制表/未转义标记），统一清洗后再绘制
+        return TextSanitizer.clean(raw)
     }
 
     /**

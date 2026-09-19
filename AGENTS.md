@@ -32,6 +32,14 @@
 - Android 抓取能力对齐：`sync/CourseCrawler.kt` 按桌面端顺序抓取「文件主列表 → 目录树 → 模块 → 页面 → 作业 → 公告 → 大纲」，下载时按 Canvas 目录重建本地子目录、引用型文件自动补元数据、跨来源按 `file_id` 去重并保留首次发现的权威路径；远端目录名经 `DownloadPlan.safeRelativeDir` 逐组件清洗 + `isInside` 包含性校验，杜绝目录穿越。**删除闸门不变**：只有文件主列表完整成功（`filesListedOk`）才允许判定远端删除，模块/页面等来源失败只减少额外发现。
 - 桌面端：`StateStore` 写事务异常回滚；CLI `login --method cookie` 回写 `auth.method`；认证中间页错误文案不再携带响应正文（只留 HTTP 状态与长度）；退出时改为等待同步线程结束（不再强杀 QThread）；排除扩展名统一归一化为 `.ext`；版本入口（`VERSION`/`__init__`/`setup.iss`）与 README 对齐。
 
+`v1.0.11`（仅 Android，versionCode 12）针对用户反馈的四类问题做修复，桌面端**无代码改动**（沿用 v1.0.10 里发布的 `1.0.7` 安装包）：
+
+- **同步 404（根因，真机实测）**：Canvas 的文件下载 URL 带 verifier 且会过期，大课程同步到后半程时最早抓到的 URL 已失效。现在下载遇 404/403 会重新请求 `/courses/:id/files/:id` 换取新签名 URL 并重试一次（`SyncEngine.downloadWithFreshUrlIfNeeded`）。
+- **同步 404（未启用来源）**：课程关闭「页面/作业/公告」等标签页时 Canvas 直接返回 404。这类 404 现在**静默处理并记入 `Prefs.disabledSources`**，后续同步直接跳过，既不刷错误提示也省请求。
+- **同步速度**：文件内容下载改为 **3 路并发**（`DOWNLOAD_CONCURRENCY`），元数据请求仍严格串行以遵守限流约束；叠加「跳过已确认未启用的来源」，每轮少发一批无谓请求。
+- **字符显示异常**：新增 `office/TextSanitizer.kt`，处理 PPT 软换行 `\u000B`、OOXML 字面转义 `_x000B_`（**7 个字符**，早期实现按 8 个会吃掉下一个字）、控制字符，保留 emoji 代理对；应用于 PPT/Word/Excel 文本与文本预览；文本预览在 UTF-8 出现替换字符时回退 **GB18030**。
+- **PPT 缺件**：① 之前完全没渲染**母版/版式里的非占位装饰图形**（校徽、色带、装饰线），现已渲染（跳过占位符避免重影）；② **渐变填充的形状会整块消失**，现在用加权平均色兜底；③ 主题色经 `DrawPaint.applyColorTransform` 应用 tint/shade。
+
 ## 2. 信息优先级
 
 发生冲突时按以下优先级判断：
@@ -173,6 +181,8 @@ cd android-app; .\gradlew.bat --offline --console=plain :app:assembleDebug
 ```
 
 Android Studio 里对应设置为：**Settings → Build, Execution, Deployment → Build Tools → Gradle → Gradle JDK → 选择 JDK 21**（`Download JDK…` 也可；**不要**继续用 Android Studio 自带 JBR，否则同样报 25.0.3）。长期方案是把 Android Studio 的 Gradle JDK 固定到 21，或在升级 Gradle/AGP 到支持 JDK 25 的版本后移除该约束。
+
+**改构建/配置文件必须用补丁工具，不要用 PowerShell 字符串替换**：`Set-Content -NoNewline`（默认 ANSI 编码）会把 `build.gradle.kts` 里的中文注释写坏，表现为 `Unexpected symbol`（`v1.0.11` 开发中真实踩过，整个仓库一度不可构建）。同类文件还有 `settings.gradle.kts`、`gradle.properties`、`.iss`、`.spec`。若要改版本号，用 `apply_patch` 精确改动对应行。
 
 ### 5.2 Android
 

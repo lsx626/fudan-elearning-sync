@@ -1,6 +1,7 @@
 package edu.fudan.elearning.sync.sync
 
 import edu.fudan.elearning.sync.network.CanvasDataSource
+import edu.fudan.elearning.sync.network.ApiException
 import edu.fudan.elearning.sync.network.CanvasFile
 import edu.fudan.elearning.sync.network.CanvasFolder
 import edu.fudan.elearning.sync.network.CanvasModule
@@ -46,7 +47,11 @@ data class CrawlOutcome(
  */
 class CourseCrawler(
     private val api: CanvasDataSource,
-    private val onWarning: (String) -> Unit = {}
+    private val onWarning: (String) -> Unit = {},
+    /** 已确认未启用的来源（Canvas 对关闭的标签页返回 404），直接跳过不再请求。 */
+    private val skipSources: Set<String> = emptySet(),
+    /** 首次发现某来源未启用时回调，调用方可持久化以便下次跳过。 */
+    private val onSourceUnavailable: (String) -> Unit = {}
 ) {
 
     suspend fun crawl(courseId: Long): CrawlOutcome {
@@ -290,10 +295,20 @@ class CourseCrawler(
         name: String,
         block: suspend () -> Unit
     ) {
+        if (name in skipSources) return
         try {
             block()
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
+        } catch (notFound: ApiException.Server) {
+            if (notFound.code == 404) {
+                // 课程根本没启用这个功能（如关闭了「页面」/「作业」标签）：
+                // 不当作错误提示给用户，只记住下次跳过
+                onSourceUnavailable(name)
+            } else {
+                onWarning("课程来源 $name 获取失败：${notFound.message}")
+                errors += "$name: ${notFound.message}"
+            }
         } catch (error: Exception) {
             onWarning("课程来源 $name 获取失败：${error.message}")
             errors += "$name: ${error.message}"

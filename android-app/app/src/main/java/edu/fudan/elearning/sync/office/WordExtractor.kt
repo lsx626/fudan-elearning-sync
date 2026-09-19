@@ -152,7 +152,7 @@ object WordExtractor {
     }
 
     private fun convertRun(run: XWPFRun, scale: Float): DocRun? {
-        val text = run.text() ?: ""
+        val text = TextSanitizer.clean(run.text())
         if (text.isEmpty()) return null
         // XWPFRun.getFontSize() 返回 int（未设置时为 -1），正数时为磅值
         val sizePt = runCatching { run.fontSizeAsDouble }.getOrNull() ?: 12.0
