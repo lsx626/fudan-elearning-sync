@@ -58,8 +58,12 @@ sealed class PageItem {
     /** 定位文本块（PPT 文本框、表格单元等）。 */
     data class TextBlock(val rect: Rect4, val paragraphs: List<DocParagraph>) : PageItem()
 
-    /** 表格网格：按行列排布的单元文本。 */
-    data class Table(val rect: Rect4, val rows: List<DocRow>) : PageItem()
+    /**
+     * 表格网格：按行列排布的单元文本。
+     * [columnWidths] 为各列的绝对像素宽（已按内容宽度归一化），
+     * null 或列数不匹配时按行内单元数均分。
+     */
+    data class Table(val rect: Rect4, val rows: List<DocRow>, val columnWidths: List<Float>? = null) : PageItem()
 
     /** 直线（表格边框、分隔线等）。 */
     data class Line(val x1: Float, val y1: Float, val x2: Float, val y2: Float,
@@ -69,6 +73,7 @@ sealed class PageItem {
 /** 表格的一行。 */
 data class DocRow(
     val cells: List<DocCell>,
+    /** 行高（像素）。 */
     val heightPx: Float
 )
 
@@ -107,4 +112,10 @@ sealed class FlowBlock {
     data class Picture(val bytes: ByteArray, val mime: String,
                        val widthPx: Int, val heightPx: Int) : FlowBlock()
     data class Spacer(val heightPx: Float) : FlowBlock()
+
+    /**
+     * 表格：行序列 + 各列相对权重。列宽与行高在分页时按真实文本测量计算，
+     * 超过一页的表格会被切成多段分别落到不同页。
+     */
+    data class Table(val rows: List<DocRow>, val columnWeights: List<Float>) : FlowBlock()
 }

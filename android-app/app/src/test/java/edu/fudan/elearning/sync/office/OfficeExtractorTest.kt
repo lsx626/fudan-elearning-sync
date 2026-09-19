@@ -15,7 +15,13 @@ import org.junit.rules.TemporaryFolder
 import java.awt.Dimension
 import java.awt.geom.Rectangle2D
 import java.io.File
+import org.apache.poi.xwpf.usermodel.Document
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import java.io.FileOutputStream
+import java.util.zip.CRC32
+import java.util.zip.Deflater
 
 /**
  * Office 解析层单元测试：用 POI 写 API 在测试内现造合成夹具（docx/pptx/xlsx/xls），
@@ -175,5 +181,115 @@ class OfficeExtractorTest {
         val texts = pageTexts(pages)
         assertTrue(texts.contains("旧版单元格"))
         assertTrue(texts.contains("42"))
+    }
+    @Test
+    fun docx_table_extractedAsTableBlock() {
+        val file = write("tbl.docx") { out ->
+            XWPFDocument().use { doc ->
+                doc.createParagraph().createRun().setText("表前段落")
+                val table = doc.createTable()
+                val r0 = table.getRow(0)
+                r0.getCell(0).setText("姓名")
+                r0.addNewTableCell().setText("分数")
+                val r1 = table.createRow()
+                r1.getCell(0).setText("张三")
+                r1.getCell(1).setText("95")
+                doc.createParagraph().createRun().setText("表后段落")
+                doc.write(out)
+            }
+        }
+
+        val flow = WordExtractor.extract(file, 1080)
+
+        // 段落 -> 表格 -> 段落 的正文顺序被保留
+        assertTrue(flow.blocks.filterIsInstance<FlowBlock.Table>().isNotEmpty())
+        assertTrue(flow.blocks.filterIsInstance<FlowBlock.Paragraph>()
+            .joinToString { it.para.text }.contains("表前段落"))
+        assertTrue(flow.blocks.filterIsInstance<FlowBlock.Paragraph>()
+            .joinToString { it.para.text }.contains("表后段落"))
+        val tbl = flow.blocks.filterIsInstance<FlowBlock.Table>().first()
+        val texts = tbl.rows.joinToString { row -> row.cells.joinToString { it.text } }
+        assertTrue(texts.contains("姓名"))
+        assertTrue(texts.contains("分数"))
+        assertTrue(texts.contains("张三"))
+        assertTrue(tbl.columnWeights.isNotEmpty())
+    }
+
+    @Test
+    fun docx_inlineImage_extractedAsPicture() {
+        // 合成 100x50 RGB PNG（单测不依赖 AWT：Android 编译期无 java.desktop）
+        val png = makePng(100, 50)
+        val file = write("img.docx") { out ->
+            XWPFDocument().use { doc ->
+                val p = doc.createParagraph()
+                val r = p.createRun()
+                r.setText("图片说明")
+                r.addPicture(ByteArrayInputStream(png), Document.PICTURE_TYPE_PNG, "dot.png",
+                1270000, 635000)   // EMU：100pt x 50pt
+                doc.write(out)
+            }
+        }
+
+        val flow = WordExtractor.extract(file, 1080)
+
+        val pics = flow.blocks.filterIsInstance<FlowBlock.Picture>()
+        assertTrue(pics.isNotEmpty())
+        val pic = pics.first()
+        assertTrue(pic.bytes.size > 100)
+        // EMU->px 换算必须保持原始宽高比（100:50 = 2:1）
+        assertTrue("widthPx=" + pic.widthPx + " heightPx=" + pic.heightPx,
+            pic.widthPx > 0 && pic.heightPx > 0)
+        val ratio = pic.widthPx.toFloat() / pic.heightPx
+        assertTrue("ratio=" + ratio, ratio in 1.9f..2.1f)
+    }
+
+    /** 手写最小合法 PNG（IHDR/IDAT/IEND），避免单测依赖 AWT 解码器。 */
+    private fun makePng(w: Int, h: Int): ByteArray {
+        val ihdr = ByteArrayOutputStream(13).let { bos ->
+            DataOutputStream(bos).use {
+                it.writeInt(w); it.writeInt(h)
+                it.writeByte(8)   // 位深
+                it.writeByte(2)   // 色彩类型：真彩 RGB
+                it.writeByte(0); it.writeByte(0); it.writeByte(0)
+            }
+            bos.toByteArray()
+        }
+        // 原始扫描线：每行 = 1 字节过滤位 + w*3 字节 RGB
+        val raw = ByteArrayOutputStream()
+        for (y in 0 until h) {
+            raw.write(0)
+            for (x in 0 until w) {
+                raw.write(0x4F); raw.write(0x46); raw.write(0xE5)
+            }
+        }
+        // android.jar 的 Deflater 未必是 Closeable，不用 .use；测试内创建后即丢弃
+        val deflater = Deflater()
+        deflater.setInput(raw.toByteArray())
+        deflater.finish()
+        val idatBos = ByteArrayOutputStream()
+        val idatBuf = ByteArray(4096)
+        while (!deflater.finished()) idatBos.write(idatBuf, 0, deflater.deflate(idatBuf))
+        val idat = idatBos.toByteArray()
+        val out = ByteArrayOutputStream()
+        out.write(byteArrayOf(0x89.toByte(), 0x50.toByte(), 0x4E.toByte(), 0x47.toByte(),
+            0x0D.toByte(), 0x0A.toByte(), 0x1A.toByte(), 0x0A.toByte()))  // PNG 签名
+        out.write(pngChunk("IHDR", ihdr))
+        out.write(pngChunk("IDAT", idat))
+        out.write(pngChunk("IEND", ByteArray(0)))
+        return out.toByteArray()
+    }
+
+    private fun pngChunk(type: String, data: ByteArray): ByteArray {
+        val crc = CRC32()
+        crc.update(type.toByteArray(Charsets.US_ASCII))
+        crc.update(data)
+        val bos = ByteArrayOutputStream()
+        DataOutputStream(bos).use {
+            it.writeInt(data.size)
+            it.write(type.toByteArray(Charsets.US_ASCII))
+            it.write(data)
+            it.writeInt(crc.value.toInt())
+        }
+        return bos.toByteArray()
     }
 }

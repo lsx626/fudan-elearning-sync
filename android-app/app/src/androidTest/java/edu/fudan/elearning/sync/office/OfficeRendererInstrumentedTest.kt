@@ -193,4 +193,54 @@ class OfficeRendererInstrumentedTest {
         val result = OfficeExtractor.extract(ctx, file)
         assertTrue("不支持的扩展名应返回 Unsupported，实际: $result", result is OfficeParseResult.Unsupported)
     }
+    /**
+     * 真实 Office 文档（本机 Word/PowerPoint COM 生成，含表格/图片/富文本）
+     * 验证 doc/docx/ppt 的「完整页面」渲染：表格块、图片块都被解析并画出来。
+     * 夹具由 adb push 放到 fixtures 目录，缺失时跳过。
+     */
+    @Test
+    fun officeFixtures_renderTablesAndPictures() {
+        val fixturesDir = ctx.getExternalFilesDir("fixtures")
+
+        // ---- .doc（旧二进制）：表格 + 逐段字符格式（加粗/红色）----
+        val doc = File(fixturesDir, "legacy.doc")
+        assumeTrue("跳过：未在 ${doc.parent} 发现 legacy.doc", doc.exists())
+        val docRes = OfficeExtractor.extract(ctx, doc)
+        assertTrue("解析 legacy.doc 应成功，实际: $docRes", docRes is OfficeParseResult.Success)
+        val docPages = (docRes as OfficeParseResult.Success).pages
+        val docTables = docPages.flatMap { it.items }.filterIsInstance<PageItem.Table>()
+        assertTrue(".doc 应至少渲染出一个表格，首页元素：${docPages.first().items.map { it::class.simpleName }}",
+            docTables.isNotEmpty())
+        val docCellText = docTables.joinToString { tbl ->
+            tbl.rows.joinToString { it.cells.joinToString { c -> c.text } }
+        }
+        assertTrue(".doc 表格单元应含 Alice 与 Score：$docCellText",
+            docCellText.contains("Alice") && docCellText.contains("Score"))
+        val docBmp = PageRenderer.renderPage(docPages.first())
+        assertTrue(".doc 首页位图应合法", docBmp.width > 0 && docBmp.height > 0)
+        docBmp.recycle()
+
+        // ---- .docx：内嵌图片 + 表格 ----
+        val docx = File(fixturesDir, "modern.docx")
+        assumeTrue("跳过：未在 ${docx.parent} 发现 modern.docx", docx.exists())
+        val docxRes = OfficeExtractor.extract(ctx, docx)
+        assertTrue("解析 modern.docx 应成功，实际: $docxRes", docxRes is OfficeParseResult.Success)
+        val docxItems = (docxRes as OfficeParseResult.Success).pages.flatMap { it.items }
+        assertTrue(".docx 应含图片块", docxItems.any { it is PageItem.Image })
+        assertTrue(".docx 应含表格块", docxItems.any { it is PageItem.Table })
+
+        // ---- .ppt（真实旧格式）：形状 + 表格 + 图片 ----
+        val ppt = File(fixturesDir, "legacy.ppt")
+        assumeTrue("跳过：未在 ${ppt.parent} 发现 legacy.ppt", ppt.exists())
+        val pptRes = OfficeExtractor.extract(ctx, ppt)
+        assertTrue("解析 legacy.ppt 应成功，实际: $pptRes", pptRes is OfficeParseResult.Success)
+        val pptPages = (pptRes as OfficeParseResult.Success).pages
+        assertEquals("legacy.ppt 应为 2 页，实际 ${pptPages.size}", 2, pptPages.size)
+        val pptItems = pptPages.flatMap { it.items }
+        assertTrue(".ppt 应含图片块", pptItems.any { it is PageItem.Image })
+        assertTrue(".ppt 应含表格块", pptItems.any { it is PageItem.Table })
+        val pptBmp = PageRenderer.renderPage(pptPages.first())
+        assertTrue(".ppt 首页位图应合法", pptBmp.width > 0 && pptBmp.height > 0)
+        pptBmp.recycle()
+    }
 }

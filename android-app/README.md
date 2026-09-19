@@ -12,7 +12,8 @@ UI 风格、配色与应用图标保持一致。
 - **应用内文件预览**：PDF / Word / Excel / PPT（doc/docx/ppt/pptx/xls/xlsx）/ 图片
   （含 GIF 动图、HEIF）/ 文本 / 音视频全部应用内打开，不跳转第三方应用；
   PDF 与 Office 为**纵向连续滚动**（下拉式翻页）+ 双指/双击缩放，逐页按需渲染并做
-  LRU 位图缓存，大文档不 OOM
+  LRU 位图缓存，大文档不 OOM；Office 保留形状坐标、逐段字符格式、内嵌图片与表格
+  （Word 表格可跨页），是完整页面渲染而非纯文字提取
 - **文件分享**：系统 ShareSheet 分享本地文件（仅授予临时只读 URI 权限），
   OOXML 文件类型正确声明，接收方可识别
 - **后台同步**：WorkManager 定时增量同步（默认 15 分钟）
@@ -27,9 +28,9 @@ UI 风格、配色与应用图标保持一致。
 - `SQLiteOpenHelper` 本地状态库（与桌面端数据库相互独立、结构不同）
 - WorkManager 后台周期同步
 - Office 预览：Apache POI 解析 doc/docx/ppt/pptx/xls/xlsx，自定义 Canvas 逐页
-  渲染；Android 平台无 `java.awt`/`javax.xml.stream`/`javax.xml.catalog`，桩源码放 `app/src/awtstub/java/`，
+  渲染（形状坐标、逐段字符格式、内嵌图片、跨页表格）；Android 平台无 `java.awt`/`javax.xml.stream`/`javax.xml.catalog`，桩源码放 `app/src/awtstub/java/`，
   用 `--limit-modules java.base` 单独编译成 jar，以 `implementation` 同时进入编译期与运行期 classpath
-  （编译期解析 POI 的 java.awt 符号、运行期在设备上提供类定义）；`javax.xml.namespace` 由 android.jar
+  （`android.jar` 完全不含 java.awt，编译期符号只能由桩提供；曾实测 `runtimeOnly` 会导致编译期 `Cannot access class`）；`javax.xml.namespace` 由 android.jar
   提供，桩 jar 打包时 exclude 以免重复
 
 ## 项目结构
@@ -65,7 +66,7 @@ android-app/
 
 - **应用名称**：复小学
 - **包名**：`edu.fudan.elearning.sync`
-- **版本**：1.0.7（versionCode 8）
+- **版本**：1.0.8（versionCode 9）
 - **最低 Android 版本**：8.0（API 26）
 - **目标 Android 版本**：15（API 35）
 

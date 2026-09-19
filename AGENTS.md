@@ -18,7 +18,7 @@
 
 当前 GitHub 远端为 `https://github.com/lsx626/fuxiaoxue.git`，主分支为 `main`。只有在用户明确要求提交或上传时才提交、推送；推送前必须再次检查差异和敏感文件。
 
-项目所有者已明确提出长期交付要求：持续完成整项目检查、修复、功能补齐和发布验收，并将成果上传到上述 GitHub 仓库。`v1.0.5` 与 `v1.0.6` 是已发布的阶段版本。`v1.0.6` 修复了桌面端下载鉴权导致的同步失败、桌面设置页布局与用户名截断问题，并补齐了 Android 应用内预览（PDF/图片/文本/音视频/Office 结构化降级）与 Android 界面重绘；但不代表最初的全部双端需求已经完成：Android 分页/限流/可靠下载（`.part`、续传、原子替换）等 P0 缺口必须继续如实保留。每次上传前都要复核目标分支、敏感文件和产物，上传后反馈 commit SHA、标签和 Release 地址。v1.0.7（仅 Android）实装了文件分享（修复 ApplicationContext 启动崩溃、修正 OOXML MIME）、Office 六格式（doc/docx/ppt/pptx/xls/xlsx）应用内逐页渲染（POI 解析 + Canvas 绘制）、PDF/Office 纵向连续滚动与双指缩放；Office 图表/SmartArt/OLE 等复杂元素仍只做限制说明，不做高保真还原。
+项目所有者已明确提出长期交付要求：持续完成整项目检查、修复、功能补齐和发布验收，并将成果上传到上述 GitHub 仓库。`v1.0.5` 与 `v1.0.6` 是已发布的阶段版本。`v1.0.6` 修复了桌面端下载鉴权导致的同步失败、桌面设置页布局与用户名截断问题，并补齐了 Android 应用内预览（PDF/图片/文本/音视频/Office 结构化降级）与 Android 界面重绘；但不代表最初的全部双端需求已经完成：Android 分页/限流/可靠下载（`.part`、续传、原子替换）等 P0 缺口必须继续如实保留。每次上传前都要复核目标分支、敏感文件和产物，上传后反馈 commit SHA、标签和 Release 地址。v1.0.7（仅 Android）实装了文件分享（修复 ApplicationContext 启动崩溃、修正 OOXML MIME）、Office 六格式（doc/docx/ppt/pptx/xls/xlsx）应用内逐页渲染（POI 解析 + Canvas 绘制）、PDF/Office 纵向连续滚动与双指缩放；Office 图表/SmartArt/OLE 等复杂元素仍只做限制说明，不做高保真还原。`v1.0.8`（仅 Android）在 v1.0.7 基础上补齐 Word 的「完整页面」：`.doc`/`.docx` 现在提取内嵌图片、表格（可跨页切分）与逐段字符格式（字号/颜色/加粗/斜体/下划线），并修正 `.docx` 图片尺寸单位（`XWPFPicture.getWidth()/getDepth()` 返回磅而非 EMU，旧换算有误）；六格式均为应用内逐页完整渲染，而非纯文字提取。
 
 ## 2. 信息优先级
 
@@ -56,7 +56,7 @@ Android 当前使用 `SQLiteOpenHelper` 而非 Room；应用内文档预览与�
 | Canvas 分页与限流 | 已实现 | 分页和可靠重试未完整实现 | Android 对齐桌面端 |
 | 完整来源爬取 | 文件/目录/模块/页面/作业/公告/大纲 | 仅课程文件列表 | Android 逐步对齐 |
 | 可靠增量下载 | `.part`、续传、大小校验、原子替换 | 直接覆盖，缺少完整性保护 | Android 对齐关键安全能力 |
-| 应用内 PDF/Office/图片/文本预览 | 已实现，部分格式有降级 | `v1.0.7` 起：PDF 与 Office（doc/docx/ppt/pptx/xls/xlsx，POI 解析 + Canvas 逐页渲染）均为纵向连续滚动 + 双指/双击缩放；图片（含 GIF/HEIF）、文本/CSV（2MiB 上限）已实现；ODF/HTML 仍为结构化降级 | 两端对齐富文本渲染 |
+| 应用内 PDF/Office/图片/文本预览 | 已实现，部分格式有降级 | `v1.0.7` 起：PDF 与 Office（doc/docx/ppt/pptx/xls/xlsx，POI 解析 + Canvas 逐页渲染）均为纵向连续滚动 + 双指/双击缩放；`.doc`/`.docx` 自 `v1.0.8` 起渲染内嵌图片、跨页表格与逐段字符格式（完整页面）；图片（含 GIF/HEIF）、文本/CSV（2MiB 上限）已实现；ODF/HTML 仍为结构化降级 | 两端对齐富文本渲染 |
 | 应用内音视频 | 已实现 | `v1.0.6` 起用 Media3/ExoPlayer 实现：播放/暂停、停止、±10 秒、进度拖动、音量、单曲循环、错误界面 | 保持 |
 | 分享 | 本地文件菜单已实现 | `v1.0.7` 起实装系统 ShareSheet：修复 ApplicationContext 启动崩溃、修正 OOXML MIME | 保持并补充错误处理 |
 | 后台同步 | 托盘定时同步 | WorkManager 周期同步 | 保持可靠、互斥、可观测 |
@@ -299,7 +299,7 @@ MainWindow
 - `worker/SyncWorker.kt`：WorkManager 周期/单次同步。
 - `ui/AppViewModel.kt`：MVVM 状态编排；`LoginScreen`/`HomeScreen`：Compose UI。
 - `preview/`：统一预览路由（`PreviewScreen` + `FileTypes`）、`VerticalPageList`（纵向连续滚动 + 双指缩放 + LRU 位图缓存）与 PDF/图片/文本/音视频/降级预览屏。
-- `office/`：Office 六格式页模型（`PageModel`）、POI 提取器（`SlideExtractor`/`WordExtractor`/`SheetExtractor`）、`OfficeExtractor` 语义化结果与 `PageRenderer` 逐页 Canvas 渲染。
+- `office/`：Office 六格式页模型（`PageModel`）、POI 提取器（`SlideExtractor`/`WordExtractor`/`SheetExtractor`）、`OfficeExtractor` 语义化结果与 `PageRenderer` 逐页 Canvas 渲染；Word 路径提取内嵌图片、表格（`FlowBlock.Table`，按列权重定列宽、按真实文本测量行高并跨页切分）与逐段字符格式。
 - `awtstub/`（`app/src/awtstub/java/`）：`java.awt`/`java.awt.geom`/`javax.xml.stream`/`javax.xml.catalog` 的最小桩**源码**，由独立 `JavaCompile` 任务编译为 `java-platform-stubs.jar`，以 `implementation` 同时进入**编译期与运行期** classpath（机制与硬性约束见第 17 节）。
 
 保持 `AppViewModel + StateFlow` 的主结构，但数据库、网络和文件 I/O 必须明确切到 IO dispatcher。业务异常需要显式错误状态，不能把空列表或 `Result.success()` 当作所有失败的统一结果。
@@ -532,13 +532,13 @@ Android 当前直接写目标文件，缺少 `.part`、续传、长度校验、�
 `v1.0.7` 起，Android 应用内预览：`AppViewModel.openPreview()` 驱动 `PreviewScreen` 统一路由，`FileUtils` 不再使用 `ACTION_VIEW` 打开预览（分享仍用 `ACTION_SEND`）。已实现：
 
 - PDF：平台 `PdfRenderer`，**纵向连续滚动**（`VerticalPageList`，下拉式翻页）+ 双指/双击缩放；复用单一渲染器实例，位图按需 LRU 缓存（展示中的页被钉住，不回收）。
-- Office 六格式（doc/docx/ppt/pptx/xls/xlsx）：Apache POI 解析为 `DocPage` 页模型，Canvas 逐页渲染，保留形状坐标、文本格式、图片与表格；`pptx/ppt` 一张幻灯片一页，`docx/doc` 按真实文本测量分页，`xlsx/xls` 按工作表分页（超大行数按固定页高切割）；同样纵向连续滚动 + 缩放。
+- Office 六格式（doc/docx/ppt/pptx/xls/xlsx）：Apache POI 解析为 `DocPage` 页模型，Canvas 逐页渲染，保留形状坐标、文本格式、图片与表格；`pptx/ppt` 一张幻灯片一页，`docx/doc` 按真实文本测量分页（图片按内容宽度等比适配、超高图片限高、表格可跨页切分），`xlsx/xls` 按工作表分页（超大行数按固定页高切割）；同样纵向连续滚动 + 缩放。`v1.0.8` 起 `.doc`/`.docx` 的内嵌图片、表格与逐段字符格式被完整提取渲染，不再是纯文字。
 - 图片（Coil，含 GIF 动图与 HEIF，双指缩放 + 双击复位）、文本/CSV（`2 MiB` 上限流式读取 + 截断提示）、音视频（Media3/ExoPlayer，完整传输控制与错误界面）。
 - ODF/HTML 仍为结构化降级（轻量文本抽取 + 明确限制说明）。
 
 仍缺：HTML 富文本渲染（当前显示源文本）、Office 图表/SmartArt/OLE 等复杂元素的高保真还原；损坏文件与不支持格式的降级已有插桩测试覆盖（corruptFile_reportsFailureNotCrash、officePreview_corruptShowsErrorPage），音视频 codec 不支持的端到端测试仍缺。
 
-**POI 与 java.* 桩（硬性约束，已实证）**：Android 平台（`android.jar`）**没有** `java.awt`、`javax.xml.stream`、`javax.xml.catalog`（用 zip 条目枚举 `android-36/android.jar` 确认为 0 个），而 Apache POI 与 xmlbeans 的 API 签名与字节码都引用了它们；`app/src/awtstub/java/` 提供满足其调用面的最小桩**源码**，包名声明为 `java.awt`/`java.awt.geom`/`javax.xml.stream`/`javax.xml.catalog`，以及仅为编译桩源码而存在的 `javax.xml.namespace`。
+**POI 与 java.* 桩（硬性约束，已实证）**：Android 平台（`android.jar`）**没有** `java.awt`、`javax.xml.stream`、`javax.xml.catalog`（用 zip 条目枚举 `android-36/android.jar` 确认为 0 个），而 Apache POI 与 xmlbeans 的 API 签名与字节码都引用了它们；`app/src/awtstub/java/` 提供满足其调用面的最小桩**源码**，包名声明为 `java.awt`/`java.awt.geom`/`javax.xml.stream`/`javax.xml.catalog`，以及仅为编译桩源码而存在的 `javax.xml.namespace`。该 jar 必须以 `implementation`（**不是** `runtimeOnly`）引入：`android.jar` 完全不含 `java.awt`，编译期符号只能由本桩提供；已实测改用 `runtimeOnly` 会让 `compileDebugKotlin` 对全部 `java.awt.*` 引用报 `Cannot access class`。
 
 这些桩**必须同时进入编译期与运行期 classpath**（`implementation(files(javaStubsJar))`），原因与陷阱如下：
 
@@ -616,7 +616,7 @@ $env:JAVA_HOME = "<JDK 17 路径>"
 
 `connectedDebugAndroidTest` 需要 API 26+ 设备/模拟器。
 
-**JVM 单测的路径限制（已实证）**：`testDebugUnitTest` 的测试 worker 是独立 JVM。当项目路径含非 ASCII 字符（本机为 `D:\Projects\学习资料自动收集`）时，Gradle 传递给 worker 的类路径会无法解析项目自身的测试类，报 `ClassNotFoundException: ...OfficeExtractorTest`（注意：直接用 `java -cp "<中文路径>"` 是好的，纯属 Gradle worker 的传递问题；设 `file.encoding`/`sun.jnu.encoding` 无效）。**解决办法**：把项目目录做一个 ASCII 路径的目录联结（junction），在联结路径下跑单测：`cmd /c mklink /J C:\fxs "D:\Projects\学习资料自动收集"`，然后 `cd C:\fxs\android-app` 执行 `gradlew testDebugUnitTest`。编译 APK（`assembleDebug`）不受影响，原路径即可。插桩测试现状（2026-09-19，API 36 模拟器实测）：OfficeRendererInstrumentedTest 8 项 + OfficePreviewUiTest 2 项全部通过（覆盖 pptx/docx/xlsx/xls/ppt 的解析+Canvas 渲染、损坏文件降级、不支持格式降级、预览界面纵向翻页与错误页）；HomeScreenTest 8 项中 6 项通过，settingsTab_showsAccountAndInterval 与 courseDetail_showsChineseFileStatus 2 项失败——已用 v1.0.6 标签的全新 worktree 同样复现失败，确认为 v1.0.6 既存问题而非 v1.0.7 回归，本周期未修复（超出 v1.0.7 范围）。仍缺认证、分页、数据库迁移、下载完整性、Worker 重试的单元/集成测试。
+**JVM 单测的路径限制（已实证）**：`testDebugUnitTest` 的测试 worker 是独立 JVM。当项目路径含非 ASCII 字符（本机为 `D:\Projects\学习资料自动收集`）时，Gradle 传递给 worker 的类路径会无法解析项目自身的测试类，报 `ClassNotFoundException: ...OfficeExtractorTest`（注意：直接用 `java -cp "<中文路径>"` 是好的，纯属 Gradle worker 的传递问题；设 `file.encoding`/`sun.jnu.encoding` 无效）。**解决办法**：把项目目录做一个 ASCII 路径的目录联结（junction），在联结路径下跑单测：`cmd /c mklink /J C:\fxs "D:\Projects\学习资料自动收集"`，然后 `cd C:\fxs\android-app` 执行 `gradlew testDebugUnitTest`。编译 APK（`assembleDebug`）不受影响，原路径即可。插桩测试现状（2026-09-19，API 36 模拟器实测）：OfficeRendererInstrumentedTest 9 项 + OfficePreviewUiTest 2 项全部通过（覆盖 pptx/docx/xlsx/xls/ppt 的解析+Canvas 渲染、本机 Office COM 生成的真实 .doc/.docx/.ppt 夹具的表格与图片渲染、损坏文件降级、不支持格式降级、预览界面纵向翻页与错误页）；HomeScreenTest 8 项中 6 项通过，settingsTab_showsAccountAndInterval 与 courseDetail_showsChineseFileStatus 2 项失败——已用 v1.0.6 标签的全新 worktree 同样复现失败，确认为 v1.0.6 既存问题而非 v1.0.7 回归，本周期未修复（超出 v1.0.7 范围）。仍缺认证、分页、数据库迁移、下载完整性、Worker 重试的单元/集成测试。
 
 ### 19.3 人工发布验收
 

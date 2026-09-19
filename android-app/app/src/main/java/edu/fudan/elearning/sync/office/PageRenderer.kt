@@ -23,15 +23,21 @@ import kotlin.math.roundToInt
  * 绘制策略：
  * - 文本用 StaticLayout（支持换行与富文本 Span），位置由模型决定；
  * - 图片解码后按目标矩形等比缩放；
- * - 表格逐行绘制单元文本、底色与网格线。
+ * - 表格逐行绘制单元文本、底色与网格线，列宽按权重归一化；
+ * - Word 表格可跨页：按行高把表格切成多段，分别落到不同页。
  */
 object PageRenderer {
 
-    /** ARGB Long → Int 颜色。 */
+    /** 表格单元内边距与最小行高（像素）。 */
+    private const val CELL_PADDING = 6f
+    private const val CELL_EXTRA_H = 8f
+    private const val MIN_ROW_H = 18f
+
+    /** ARGB Long -> Int 颜色。 */
     private fun Long.toIntColor(): Int = this.toInt()
 
     /**
-     * Word 流式文档分页：按段落真实高度切页，尽量贴近原阅读器版式。
+     * Word 流式文档分页：按段落/表格真实高度切页，尽量贴近原阅读器版式。
      */
     fun paginate(doc: FlowDocument): List<DocPage> {
         if (doc.blocks.isEmpty()) {
@@ -40,6 +46,8 @@ object PageRenderer {
         }
         val pages = mutableListOf<DocPage>()
         val contentW = (doc.pageWidthPx - 2 * doc.marginPx).toFloat()
+        // 一页可用的内容高度（上下留边）
+        val contentH = (doc.pageHeightPx - 2 * doc.marginPx).toFloat()
         var items = mutableListOf<PageItem>()
         var y = doc.marginPx
 
@@ -73,8 +81,24 @@ object PageRenderer {
                 is FlowBlock.Picture -> {
                     var w = block.widthPx.toFloat()
                     var h = block.heightPx.toFloat()
-                    if (w > contentW) {
+                    if (w <= 0 || h <= 0) {
+                        // 声明尺寸缺失（旧格式图片），用真实解码尺寸按内容宽度适配
+                        val ratio = decodeRatio(block.bytes)
+                        if (ratio > 0) {
+                            w = contentW
+                            h = contentW / ratio
+                        } else {
+                            w = contentW * 0.6f
+                            h = contentW * 0.4f
+                        }
+                    } else if (w > contentW) {
                         val r = contentW / w
+                        w *= r; h *= r
+                    }
+                    // 超高图片最多占一页可用高度的 85%，避免单图撑爆内存
+                    val maxH = contentH * 0.85f
+                    if (h > maxH) {
+                        val r = maxH / h
                         w *= r; h *= r
                     }
                     if (y + h > doc.pageHeightPx - doc.marginPx && items.isNotEmpty()) {
@@ -89,6 +113,38 @@ object PageRenderer {
                 is FlowBlock.Spacer -> {
                     y += block.heightPx
                 }
+                is FlowBlock.Table -> {
+                    val rows = block.rows
+                    if (rows.isEmpty()) continue
+                    val ncol = rows.maxOf { it.cells.size }.coerceAtLeast(1)
+                    val colWs = columnWidths(ncol, block.columnWeights, contentW)
+                    // 按可用页高把表格切成多段；单行超高时独占一页
+                    val chunks = mutableListOf<Pair<List<DocRow>, Float>>()
+                    var curRows = mutableListOf<DocRow>()
+                    var curH = 0f
+                    for (row in rows) {
+                        val rowH = measureRowHeight(row, colWs)
+                        if (curH + rowH > contentH && curRows.isNotEmpty()) {
+                            chunks.add(curRows.toList() to curH)
+                            curRows = mutableListOf()
+                            curH = 0f
+                        }
+                        curRows.add(row.copy(heightPx = rowH))
+                        curH += rowH
+                    }
+                    if (curRows.isNotEmpty()) chunks.add(curRows.toList() to curH)
+                    // 逐段放入当前页，放不下则翻页
+                    for ((chunkRows, chunkH) in chunks) {
+                        if (y + chunkH > doc.pageHeightPx - doc.marginPx && items.isNotEmpty()) {
+                            flushPage()
+                        }
+                        items.add(PageItem.Table(
+                            Rect4(doc.marginPx, y, doc.pageWidthPx - doc.marginPx, y + chunkH),
+                            chunkRows, colWs
+                        ))
+                        y += chunkH
+                    }
+                }
             }
             if (y > doc.pageHeightPx - doc.marginPx && items.isNotEmpty()) {
                 flushPage()
@@ -96,6 +152,48 @@ object PageRenderer {
         }
         if (items.isNotEmpty()) flushPage()
         return pages
+    }
+
+    /** 列权重 -> 绝对像素宽（按内容宽度归一化）；权重缺失或列数不符则均分。 */
+    private fun columnWidths(ncol: Int, weights: List<Float>, contentW: Float): List<Float> {
+        if (ncol <= 0) return emptyList()
+        if (weights.size == ncol && weights.sum() > 0f) {
+            val sum = weights.sum()
+            return weights.map { (it / sum * contentW).coerceAtLeast(24f) }
+        }
+        return List(ncol) { contentW / ncol }
+    }
+
+    /** 实测一行高度：取行内各单元文本换行后的最大高度。列数不匹配时按均分重算。 */
+    private fun measureRowHeight(row: DocRow, colWs: List<Float>): Float {
+        if (row.cells.isEmpty()) return MIN_ROW_H
+        val widths = if (row.cells.size == colWs.size) colWs
+            else List(row.cells.size) { colWs.sum() / row.cells.size }
+        var maxH = 0f
+        row.cells.forEachIndexed { i, cell ->
+            if (cell.text.isEmpty()) return@forEachIndexed
+            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            paint.textSize = cell.sizePx
+            paint.isFakeBoldText = cell.bold
+            val w = (widths[i] - 2 * CELL_PADDING).roundToInt().coerceAtLeast(1)
+            val layout = StaticLayout.Builder.obtain(
+                SpannableStringBuilder(cell.text), 0, cell.text.length, paint, w
+            ).setLineSpacing(0f, 1.2f).build()
+            val lh = layout.height.toFloat()
+            if (lh > maxH) maxH = lh
+        }
+        return (maxH + CELL_EXTRA_H).coerceAtLeast(MIN_ROW_H)
+    }
+
+    /** 解码图片真实宽高比；失败返回 -1。 */
+    private fun decodeRatio(bytes: ByteArray): Float {
+        return runCatching {
+            val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            if (opts.outWidth > 0 && opts.outHeight > 0) {
+                opts.outWidth.toFloat() / opts.outHeight.toFloat()
+            } else -1f
+        }.getOrDefault(-1f)
     }
 
     private fun alignOf(align: DocAlign): Layout.Alignment = when (align) {
@@ -217,11 +315,14 @@ object PageRenderer {
     private fun drawTable(canvas: Canvas, table: PageItem.Table) {
         var y = table.rect.top
         for (row in table.rows) {
+            val ncell = row.cells.size.coerceAtLeast(1)
+            // 有显式列宽且列数匹配时用列宽，否则按行内单元数均分
+            val widths = table.columnWidths?.takeIf { it.size == ncell }
+                ?: List(ncell) { table.rect.width / ncell }
             var x = table.rect.left
-            // 按行内单元数均分宽度
-            val cellW = table.rect.width / row.cells.size.coerceAtLeast(1)
-            for (cell in row.cells) {
-                val rectF = RectF(x, y, x + cellW, y + row.heightPx)
+            row.cells.forEachIndexed { i, cell ->
+                val cw = widths[i]
+                val rectF = RectF(x, y, x + cw, y + row.heightPx)
                 cell.fill?.let {
                     canvas.drawRect(rectF, Paint().apply { color = it.toIntColor() })
                 }
@@ -238,14 +339,14 @@ object PageRenderer {
                     paint.isFakeBoldText = cell.bold
                     val sb = SpannableStringBuilder(cell.text)
                     val layout = StaticLayout.Builder.obtain(
-                        sb, 0, sb.length, paint, (cellW - 6f).roundToInt().coerceAtLeast(1)
-                    ).build()
+                        sb, 0, sb.length, paint, (cw - 2 * CELL_PADDING).roundToInt().coerceAtLeast(1)
+                    ).setLineSpacing(0f, 1.2f).build()
                     canvas.save()
-                    canvas.translate(x + 3f, y + (row.heightPx - layout.height) / 2f)
+                    canvas.translate(x + CELL_PADDING, y + (row.heightPx - layout.height) / 2f)
                     layout.draw(canvas)
                     canvas.restore()
                 }
-                x += cellW
+                x += cw
             }
             y += row.heightPx
             if (y > table.rect.bottom) break
