@@ -18,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
+import edu.fudan.elearning.sync.office.OfficePreviewScreen
 import java.io.File
 
 /**
@@ -80,6 +81,7 @@ fun PreviewScreen(
                     PreviewKind.IMAGE -> ImagePreviewScreen(file)
                     PreviewKind.TEXT -> TextPreviewScreen(file)
                     PreviewKind.MEDIA -> MediaPreviewScreen(file)
+                    PreviewKind.OFFICE -> OfficePreviewScreen(file)
                     PreviewKind.STRUCTURED -> OfficeFallbackScreen(file)
                     PreviewKind.UNSUPPORTED -> PreviewError("不支持的格式")
                 }

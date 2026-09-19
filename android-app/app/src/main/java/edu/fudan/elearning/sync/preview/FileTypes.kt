@@ -12,7 +12,7 @@ import java.io.RandomAccessFile
  *   绝不偷偷跳转外部应用。
  */
 enum class PreviewKind {
-    PDF, IMAGE, TEXT, MEDIA, STRUCTURED, UNSUPPORTED
+    PDF, IMAGE, TEXT, MEDIA, OFFICE, STRUCTURED, UNSUPPORTED
 }
 
 object FileTypes {
@@ -36,9 +36,12 @@ object FileTypes {
         "flac", "ogg", "wav", "opus", "m3u8"
     )
 
-    /** 结构化降级：Office/ODF/压缩包等无法在应用内高保真渲染的格式。 */
+    /** Office 文档：可逐页渲染（POI 解析 + Canvas 绘制）。 */
+    private val OFFICE_EXTS = setOf("doc", "docx", "xls", "xlsx", "ppt", "pptx")
+
+    /** 结构化降级：ODF/压缩包等无法在应用内高保真渲染的格式。 */
     private val STRUCTURED_EXTS = setOf(
-        "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
+        "odt", "ods", "odp",
         "rtf", "epub", "pages", "numbers", "key", "zip", "rar", "7z", "gz",
         "tar", "bz2", "xz", "iso", "dmg", "apk", "exe", "msi"
     )
@@ -56,6 +59,7 @@ object FileTypes {
             PDF_EXTS.contains(ext) -> PreviewKind.PDF
             IMAGE_EXTS.contains(ext) -> PreviewKind.IMAGE
             MEDIA_EXTS.contains(ext) -> PreviewKind.MEDIA
+            OFFICE_EXTS.contains(ext) -> PreviewKind.OFFICE
             TEXT_EXTS.contains(ext) -> PreviewKind.TEXT
             STRUCTURED_EXTS.contains(ext) -> PreviewKind.STRUCTURED
             else -> null

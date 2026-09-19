@@ -2,24 +2,14 @@ package edu.fudan.elearning.sync.preview
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,149 +17,115 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * 应用内 PDF 预览：PdfRenderer 逐页位图渲染，支持多页滑动与双指缩放。
+ * 应用内 PDF 预览：PdfRenderer 逐页位图，**纵向连续滚动**（下拉式翻页），
+ * 每页可双指缩放与双击缩放；渲染失败显示结构化错误，不跳转第三方应用。
  *
- * 与桌面端 QPdfDocument 方案对齐：多页、适配宽度；渲染失败时显示结构化错误，
- * 不跳转第三方应用。
+ * 全程复用一份 [PdfRenderer] 实例渲染所有页，位图由 [PageBitmapCache] 按需缓存。
  */
 @Composable
 fun PdfPreviewScreen(file: File) {
-    var pageCount by remember { mutableStateOf(0) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val bitmaps = remember(file.absolutePath) { mutableMapOf<Int, Bitmap>() }
+    var loadState by remember(file.absolutePath) { mutableStateOf<PdfLoadState>(PdfLoadState.Loading) }
+    var source by remember(file.absolutePath) { mutableStateOf<PdfPageSource?>(null) }
 
     LaunchedEffect(file.absolutePath) {
         withContext(Dispatchers.IO) {
-            try {
-                ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-                    PdfRenderer(pfd).use { renderer ->
-                        pageCount = renderer.pageCount
-                        if (pageCount <= 0) error = "该 PDF 没有可显示的页面"
-                    }
+            runCatching {
+                val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+                val renderer = PdfRenderer(pfd)
+                if (renderer.pageCount <= 0) {
+                    runCatching { renderer.close() }
+                    runCatching { pfd.close() }
+                    loadState = PdfLoadState.Error("该 PDF 没有可显示的页面")
+                    return@runCatching
                 }
-            } catch (e: Exception) {
-                error = "无法打开 PDF：${e.message ?: "文件可能已损坏"}"
+                source = PdfPageSource(pfd, renderer)
+                loadState = PdfLoadState.Ready(renderer.pageCount)
+            }.onFailure {
+                loadState = PdfLoadState.Error("无法打开 PDF：${it.message ?: "文件可能已损坏"}")
             }
         }
     }
 
-    when {
-        error != null -> PreviewError(error!!)
-        pageCount == 0 -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    DisposableEffect(file.absolutePath) {
+        onDispose {
+            source?.close()
+            source = null
+        }
+    }
+
+    when (val s = loadState) {
+        PdfLoadState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
-        else -> {
-            val pagerState = rememberPagerState(pageCount = { pageCount })
-            Box(Modifier.fillMaxSize().background(Color(0xFF2A2A2E))) {
-                HorizontalPager(state = pagerState) { page ->
-                    PdfPage(
-                        file = file,
-                        pageIndex = page,
-                        cached = bitmaps[page],
-                        onRendered = { bitmaps[page] = it }
-                    )
+        is PdfLoadState.Error -> PreviewError(s.message)
+        is PdfLoadState.Ready -> {
+            val src = source
+            if (src == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
                 }
-                Row(
-                    Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(bottom = 12.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Text(
-                        "${pagerState.currentPage + 1} / $pageCount",
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.background(Color(0x99000000), shape = RoundedCornerShape(12.dp))
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PdfPage(
-    file: File,
-    pageIndex: Int,
-    cached: Bitmap?,
-    onRendered: (Bitmap) -> Unit
-) {
-    var bitmap by remember(pageIndex, file.absolutePath) { mutableStateOf(cached) }
-    var loading by remember(pageIndex, file.absolutePath) { mutableStateOf(cached == null) }
-    var scale by remember(pageIndex) { mutableStateOf(1f) }
-    var offset by remember(pageIndex) { mutableStateOf(Offset.Zero) }
-
-    LaunchedEffect(file.absolutePath, pageIndex) {
-        if (bitmap == null) {
-            loading = true
-            val rendered = withContext(Dispatchers.IO) { renderPage(file, pageIndex) }
-            if (rendered != null) {
-                bitmap = rendered
-                onRendered(rendered)
-            }
-            loading = false
-        }
-    }
-
-    Box(
-        Modifier.fillMaxSize().pointerInput(pageIndex) {
-            detectTransformGestures { _, pan, zoom, _ ->
-                val newScale = (scale * zoom).coerceIn(1f, 4f)
-                scale = newScale
-                offset = if (newScale > 1f) {
-                    Offset(offset.x + pan.x, offset.y + pan.y)
-                } else Offset.Zero
-            }
-        },
-        contentAlignment = Alignment.Center
-    ) {
-        val bmp = bitmap
-        when {
-            bmp != null -> Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = "PDF 第 ${pageIndex + 1} 页",
-                modifier = Modifier.fillMaxSize().graphicsLayer(
-                    scaleX = scale, scaleY = scale,
-                    translationX = offset.x, translationY = offset.y
+            } else {
+                VerticalPageList(
+                    pageCount = s.pageCount,
+                    aspectOf = { src.aspectOf(it) },
+                    renderPage = { src.renderPage(it) }
                 )
-            )
-            loading -> CircularProgressIndicator(color = Color.White)
-            else -> Text("该页无法渲染", color = Color.White)
+            }
         }
     }
 }
 
-/** 在 IO 线程渲染单页为位图；按页面尺寸的 2 倍清晰度绘制，上限 4096。 */
-private fun renderPage(file: File, pageIndex: Int): Bitmap? {
-    return try {
-        ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-            PdfRenderer(pfd).use { renderer ->
-                if (pageIndex < 0 || pageIndex >= renderer.pageCount) return null
-                renderer.openPage(pageIndex).use { page ->
-                    val renderScale = 2
-                    val width = (page.width * renderScale).coerceAtMost(4096).coerceAtLeast(1)
-                    val height = (page.height * renderScale).coerceAtMost(4096).coerceAtLeast(1)
-                    val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                    Canvas(bmp).drawColor(android.graphics.Color.WHITE)
-                    page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    bmp
-                }
+private sealed class PdfLoadState {
+    object Loading : PdfLoadState()
+    data class Ready(val pageCount: Int) : PdfLoadState()
+    data class Error(val message: String) : PdfLoadState()
+}
+
+/** 持有一份 PdfRenderer，按需渲染单页；页面宽高比缓存后复用，避免重复 openPage。 */
+private class PdfPageSource(
+    private val pfd: ParcelFileDescriptor,
+    private val renderer: PdfRenderer
+) {
+    private val aspects = HashMap<Int, Float>()
+
+    fun aspectOf(index: Int): Float {
+        aspects[index]?.let { return it }
+        val a = runCatching {
+            renderer.openPage(index).use { p ->
+                if (p.width <= 0 || p.height <= 0) DEFAULT_ASPECT
+                else p.width.toFloat() / p.height.toFloat()
             }
+        }.getOrDefault(DEFAULT_ASPECT)
+        aspects[index] = a
+        return a
+    }
+
+    /** 以 2 倍清晰度渲染单页；长边上限 [MAX_PAGE_DIMEN]，防止位图过大 OOM。 */
+    fun renderPage(index: Int): Bitmap? = runCatching {
+        if (index < 0 || index >= renderer.pageCount) return null
+        renderer.openPage(index).use { page ->
+            val width = (page.width * RENDER_SCALE).coerceAtMost(MAX_PAGE_DIMEN).coerceAtLeast(1)
+            val height = (page.height * RENDER_SCALE).coerceAtMost(MAX_PAGE_DIMEN).coerceAtLeast(1)
+            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            Canvas(bmp).drawColor(Color.WHITE)
+            page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            bmp
         }
-    } catch (e: Exception) {
-        null
+    }.getOrNull()
+
+    fun close() {
+        runCatching { renderer.close() }
+        runCatching { pfd.close() }
+    }
+
+    companion object {
+        private const val RENDER_SCALE = 2
+        private const val MAX_PAGE_DIMEN = 4096
+        private const val DEFAULT_ASPECT = 0.75f
     }
 }

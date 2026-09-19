@@ -9,7 +9,12 @@ UI 风格、配色与应用图标保持一致。
 - **统一身份认证登录**：UIS 账号密码（RSA 加密），会话持久化，打开即同步
 - **课程列表**：学期、文件数、已下载大小一目了然
 - **文件列表**：按课程查看全部文件与下载状态
-- **文件预览 / 分享**：系统 Intent 打开（PDF / Word / Excel / PPT），ShareSheet 分享
+- **应用内文件预览**：PDF / Word / Excel / PPT（doc/docx/ppt/pptx/xls/xlsx）/ 图片
+  （含 GIF 动图、HEIF）/ 文本 / 音视频全部应用内打开，不跳转第三方应用；
+  PDF 与 Office 为**纵向连续滚动**（下拉式翻页）+ 双指/双击缩放，逐页按需渲染并做
+  LRU 位图缓存，大文档不 OOM
+- **文件分享**：系统 ShareSheet 分享本地文件（仅授予临时只读 URI 权限），
+  OOXML 文件类型正确声明，接收方可识别
 - **后台同步**：WorkManager 定时增量同步（默认 15 分钟）
 - **下载通知**：新文件下载完成时发送系统通知
 - **存储管理**：按学期 / 课程筛选删除文件，释放空间
@@ -21,6 +26,11 @@ UI 风格、配色与应用图标保持一致。
 - OkHttp + 自实现 Canvas API（与桌面端 `fudan_sync` 协议同源）
 - `SQLiteOpenHelper` 本地状态库（与桌面端数据库相互独立、结构不同）
 - WorkManager 后台周期同步
+- Office 预览：Apache POI 解析 doc/docx/ppt/pptx/xls/xlsx，自定义 Canvas 逐页
+  渲染；Android 平台无 `java.awt`/`javax.xml.stream`/`javax.xml.catalog`，桩源码放 `app/src/awtstub/java/`，
+  用 `--limit-modules java.base` 单独编译成 jar，以 `implementation` 同时进入编译期与运行期 classpath
+  （编译期解析 POI 的 java.awt 符号、运行期在设备上提供类定义）；`javax.xml.namespace` 由 android.jar
+  提供，桩 jar 打包时 exclude 以免重复
 
 ## 项目结构
 
@@ -34,8 +44,11 @@ android-app/
 │       │   ├── App.kt                    # Application 入口
 │       │   ├── MainActivity.kt           # Compose 宿主
 │       │   ├── auth/UisAuthenticator.kt  # UIS 登录（RSA + id.fudan.edu.cn）
+│       │   ├── awtstub/ (src)             # java.awt/javax.xml 桩源码 -> implementation jar
 │       │   ├── data/                     # SQLiteOpenHelper、模型与 Repo
 │       │   ├── network/                  # OkHttp、CanvasApi、CookieJar
+│       │   ├── office/                   # Office 六格式页模型 + POI 解析 + 逐页渲染
+│       │   ├── preview/                  # 统一预览路由、纵向翻页列表、各格式预览屏
 │       │   ├── sync/                     # 同步引擎、下载管理
 │       │   ├── ui/                       # LoginScreen / HomeScreen / Theme
 │       │   ├── util/                     # Prefs、SecurePrefs、FileUtils
@@ -52,7 +65,7 @@ android-app/
 
 - **应用名称**：复小学
 - **包名**：`edu.fudan.elearning.sync`
-- **版本**：1.0.5（versionCode 6）
+- **版本**：1.0.7（versionCode 8）
 - **最低 Android 版本**：8.0（API 26）
 - **目标 Android 版本**：15（API 35）
 
@@ -62,7 +75,7 @@ android-app/
 
 - Android Studio（Ladytail 或更新）
 - Android SDK（compileSdk 36）
-- JDK 17+
+- JDK 17+（Gradle 与 Kotlin 均以 17 为目标）
 
 ### 构建运行
 
@@ -70,6 +83,7 @@ android-app/
 cd android-app
 ./gradlew assembleRelease     # 或在 Android Studio 中直接 Run
 ./gradlew installRelease      # 安装到已连接设备
+./gradlew testDebugUnitTest   # JVM 单元测试（Office 解析层）
 ```
 
 > 签名密钥 `release.keystore` 和密码配置都只保存在发布者本机，均不入库。

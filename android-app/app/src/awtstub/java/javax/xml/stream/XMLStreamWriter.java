@@ -1,0 +1,35 @@
+package javax.xml.stream;
+public interface XMLStreamWriter {
+    void close() throws XMLStreamException;
+    void flush() throws XMLStreamException;
+    void writeAttribute(String localName, String value) throws XMLStreamException;
+    void writeAttribute(String namespaceURI, String localName, String value) throws XMLStreamException;
+    void writeAttribute(String prefix, String namespaceURI, String localName, String value) throws XMLStreamException;
+    void writeCData(String data) throws XMLStreamException;
+    void writeCharacters(String text) throws XMLStreamException;
+    void writeCharacters(char[] text, int start, int len) throws XMLStreamException;
+    void writeComment(String data) throws XMLStreamException;
+    void writeDTD(String dtd) throws XMLStreamException;
+    void writeDefaultNamespace(String namespaceURI) throws XMLStreamException;
+    void writeEmptyElement(String localName) throws XMLStreamException;
+    void writeEmptyElement(String namespaceURI, String localName) throws XMLStreamException;
+    void writeEmptyElement(String prefix, String localName, String namespaceURI) throws XMLStreamException;
+    void writeEndDocument() throws XMLStreamException;
+    void writeEndElement() throws XMLStreamException;
+    void writeEntityRef(String name) throws XMLStreamException;
+    void writeNamespace(String prefix, String namespaceURI) throws XMLStreamException;
+    void writeProcessingInstruction(String target) throws XMLStreamException;
+    void writeProcessingInstruction(String target, String data) throws XMLStreamException;
+    void writeStartDocument() throws XMLStreamException;
+    void writeStartDocument(String version) throws XMLStreamException;
+    void writeStartDocument(String encoding, String version) throws XMLStreamException;
+    void writeStartElement(String localName) throws XMLStreamException;
+    void writeStartElement(String namespaceURI, String localName) throws XMLStreamException;
+    void writeStartElement(String prefix, String localName, String namespaceURI) throws XMLStreamException;
+    void setNamespaceContext(javax.xml.namespace.NamespaceContext context) throws XMLStreamException;
+    javax.xml.namespace.NamespaceContext getNamespaceContext();
+    void setPrefix(String prefix, String uri) throws XMLStreamException;
+    String getPrefix(String uri) throws XMLStreamException;
+    void setDefaultNamespace(String uri) throws XMLStreamException;
+    Object getProperty(String name) throws IllegalArgumentException;
+}

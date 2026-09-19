@@ -36,6 +36,9 @@ android-app/.idea/
 *.apk
 *.aab
 
+# 本机构建/探查用的临时 jar（POI 依赖缓存等）
+.tmp-jars/
+
 # 本地数据 / 密钥
 *.cookie.json
 cookies.json

@@ -1,5 +1,6 @@
 package edu.fudan.elearning.sync.util
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
@@ -34,7 +35,14 @@ object FileUtils {
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            context.startActivity(Intent.createChooser(intent, "分享文件"))
+            // ApplicationContext 启动 Activity 必须加 NEW_TASK，否则抛
+            // "Calling startActivity() from outside of an Activity context"
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val chooser = Intent.createChooser(intent, "分享文件")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(chooser)
+        } catch (e: ActivityNotFoundException) {
+            toast(context, "没有可处理此文件的应用")
         } catch (e: Exception) {
             toast(context, "无法分享此文件：${e.message ?: "未知错误"}")
         }
@@ -42,6 +50,10 @@ object FileUtils {
 
     /** 分享本地文件（系统分享面板）：只授予临时只读 URI 权限。 */
     fun shareFile(context: Context, file: File) {
+        if (!file.exists()) {
+            toast(context, "本地文件不存在，可能已被删除")
+            return
+        }
         try {
             val uri = fileUri(context, file.absolutePath)
             val intent = Intent(Intent.ACTION_SEND).apply {
@@ -49,7 +61,12 @@ object FileUtils {
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            context.startActivity(Intent.createChooser(intent, "分享文件"))
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val chooser = Intent.createChooser(intent, "分享文件")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(chooser)
+        } catch (e: ActivityNotFoundException) {
+            toast(context, "没有可处理此文件的应用")
         } catch (e: Exception) {
             toast(context, "无法分享此文件：${e.message ?: "未知错误"}")
         }
@@ -73,9 +90,15 @@ object FileUtils {
     fun guessMime(filename: String): String {
         return when (filename.substringAfterLast('.', "").lowercase()) {
             "pdf" -> "application/pdf"
-            "doc", "docx" -> "application/msword"
-            "xls", "xlsx" -> "application/vnd.ms-excel"
-            "ppt", "pptx" -> "application/vnd.ms-powerpoint"
+            "doc" -> "application/msword"
+            "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "xls" -> "application/vnd.ms-excel"
+            "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.document"
+            "ppt" -> "application/vnd.ms-powerpoint"
+            "pptx" -> "application/vnd.openxmlformats-officedocument.presentationml.document"
+            "odt" -> "application/vnd.oasis.opendocument.text"
+            "ods" -> "application/vnd.oasis.opendocument.spreadsheet"
+            "odp" -> "application/vnd.oasis.opendocument.presentation"
             "txt", "md" -> "text/plain"
             "csv" -> "text/csv"
             "jpg", "jpeg" -> "image/jpeg"
